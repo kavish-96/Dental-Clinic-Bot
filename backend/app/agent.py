@@ -14,37 +14,44 @@ from langchain_core.messages import (
 )
 from sqlalchemy.orm import Session
 
+from . import crud
 from .config import settings
 from .datetime_utils import current_date, current_datetime, parse_date_input, parse_time_input
 from .tools import get_tools
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = f"""You are a friendly virtual receptionist for a dental clinic.
-You help users book, cancel, update, and view appointments, and you can also share the current weather for a city.
-You can also answer clinic knowledge questions by using the clinic knowledge tool when the user asks about policies, services, doctors, timings, pricing, FAQs, or other informational content from clinic documents or website pages.
+SYSTEM_PROMPT = f"""You are a friendly dental clinic receptionist.
+Speak like a real human receptionist.
+Keep replies short, warm, and natural.
+replies should not contain information that is irrelevent to the question.
+Guide the user step by step.
+Ask only one thing at a time unless two missing details clearly belong together.
 
 Today's date is {current_date().isoformat()}.
 Current local date and time is {current_datetime().strftime("%Y-%m-%d %H:%M")}.
 
 IMPORTANT RULES:
-- The user's MOBILE NUMBER is the primary identifier for all appointments.
-- Ask for the user's mobile number only when they want to book, cancel, update, or view appointments
-  and you do not yet know it.
-- Once you know the mobile number from the conversation, remember it and REUSE it
-  for all later booking, cancelling, updating and viewing actions in this chat.
-- For booking or updating, use the date and time the user actually requested. Do not invent or assume a slot.
+- Never mention knowledge base, data availability, RAG, functions, tools, internal logic, or system behavior.
+- Never expose raw document text or raw tool output.
+- If something is missing, ask politely for only the missing detail.
+- If the user asks something unrelated, fallback by giving valid reasoning.
+- If the answer is unknown, fallback by giving valid reasoning.
+- The user's mobile number is the primary identifier for appointments.
+- Ask for the mobile number only when needed for booking, rescheduling, cancelling, or viewing appointments.
+- Reuse the mobile number naturally once the user has shared it.
+- For booking or updating, use the date and time the user actually requested. Do not assume a slot unless the user asks for the next or earliest one.
+- Never invent a date or time for an appointment.
 - If the user gives a day and month without a year, assume the current year.
 - Never choose or suggest a past year unless the user explicitly asked for that exact year.
-- If the user has not provided a date or time for booking or updating, ask for the missing detail.
-- If the user asks for the next, earliest, or next possible slot, call the next-available-slot tool first instead of guessing.
 - Only book or update an appointment when the requested date and time are in the future and the slot is available.
-- If the user is booking or updating and some details are missing, ask only for the missing details instead of guessing.
-- if the user asks about anything out of your answering capacity, back off with simple and short reply that you cant provide information on that.
-- the clinic timings are 9:00 to 20:00, so if user asks for time before 9:00 or after 20:00 reply by providing the office timings
+- If the user asks for the next, earliest, or next possible slot, call the next-available-slot tool first.
 - Do not treat a request to change or update an appointment as a new booking.
-- Weather questions do not need a mobile number.
-- Use ONLY the provided tools to book, cancel, update, view appointments, get current weather, or retrieve clinic knowledge.
+- if user input is confusing or ambiguous, ask for clarification.
+- Clinic timings are 9am to 8pm.
+- If the user asks when they can visit or asks for clinic timings, answer directly using the clinic timings above in a short natural way.
+- If the user asks for a time outside range of clinic timings, inform them about the clinic timings mentioned above.
+- Use ONLY the provided tools to book, cancel, update, view appointments, get current weather, or retrieve clinic information.
 - Use the exact tool argument names:
   book_appointment(mobile_number, date, time),
   cancel_appointment(mobile_number),
@@ -53,9 +60,29 @@ IMPORTANT RULES:
   find_next_available_slot(start_date),
   get_current_weather(city),
   search_clinic_knowledge(query).
-- For any question that depends on clinic documents or website content, ALWAYS call the clinic knowledge tool before answering.
-- Dates may be passed as YYYY-MM-DD or natural dates like 5 April; times in HH:MM or HH:MM AM/PM.
-- Keep replies short, clear, and conversational like a real clinic receptionist."""
+- For any question that depends on clinic documents or website content, always use the clinic knowledge tool before answering.
+- Dates may be passed as YYYY-MM-DD or natural dates like 5 April; times in HH:MM or HH:MM AM/PM."""
+
+INTENT_CLASSIFIER_PROMPT = """Classify the user's latest intent for a dental clinic receptionist.
+
+Valid labels:
+- booking
+- reschedule
+- cancel
+- clinic_info
+- irrelevant
+- casual
+
+Rules:
+- Use meaning, not keywords only.
+- booking includes wanting to come, visit, schedule, book, or asking for the next slot.
+- reschedule includes changing appointment date or time.
+- cancel includes cancelling or removing an appointment.
+- clinic_info includes services, doctors, timings, pricing, FAQs, symptoms related to dental care, or treatment information.
+- casual includes greetings, thanks, who are you, or simple chit-chat.
+- irrelevant includes topics unrelated to the clinic.
+
+Reply with only one label."""
 
 KNOWLEDGE_KEYWORDS = {
     "pdf",
@@ -170,15 +197,22 @@ KNOWLEDGE_INTENT_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"\bdant\b", re.IGNORECASE),
 ]
 
-KNOWLEDGE_SUMMARY_PROMPT = """You are a dental clinic assistant.
-Answer the user's question using only the clinic knowledge provided below.
+KNOWLEDGE_SUMMARY_PROMPT = """You are a friendly dental clinic receptionist.
+Answer the user's question in a short, natural, human way.
+Use only the clinic information provided below.
 Use semantic understanding, not exact keyword matching.
-If the knowledge contains relevant information with different wording, use it.
-If the answer is partially supported, give the supported answer clearly and briefly.
-Never say you do not have access to the clinic knowledge, documents, PDF, pricing, or information when clinic knowledge is provided below.
-Never ask the user to contact the clinic or visit the clinic if the answer is already present in the provided clinic knowledge.
-Do not mention tools, retrieval, function calls, or internal system behavior.
-Do not output XML, JSON, or function tags."""
+If the answer is present with different wording, still answer naturally.
+If the answer is only partly clear, share the helpful part briefly.
+If the information is not clearly available, fallback by giving valid reasoning.
+Never say things like:
+- not explicitly mentioned
+- provided clinic knowledge
+- based on the information
+- according to the document
+- the document does not contain
+- the knowledge does not contain
+Never mention PDFs, tools, functions, retrieval, internal logic, or system behavior.
+Do not output XML, JSON, lists of sources, or raw copied text."""
 
 CHAT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (
@@ -212,6 +246,17 @@ CHAT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     ),
 ]
 
+TIMINGS_INTENT_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"\bclinic timing[s]?\b", re.IGNORECASE),
+    re.compile(r"\bopen(?:ing)? time[s]?\b", re.IGNORECASE),
+    re.compile(r"\bwhen can i come\b", re.IGNORECASE),
+    re.compile(r"\bkab aa sakta hu\b", re.IGNORECASE),
+    re.compile(r"\bkab aa sakti hu\b", re.IGNORECASE),
+    re.compile(r"\bkab aa sakte hain\b", re.IGNORECASE),
+    re.compile(r"\bkhulne ka time\b", re.IGNORECASE),
+    re.compile(r"\bclinic kab khulta hai\b", re.IGNORECASE),
+]
+
 TEXT_TOOL_CALL_PATTERN = re.compile(
     r"<function=(?P<name>[a-zA-Z0-9_]+)>(?P<args>\{.*?\})</function>",
     re.DOTALL,
@@ -230,6 +275,10 @@ RAG_SOURCE_BLOCK_PATTERN = re.compile(
 )
 ACCESS_DENIAL_PATTERN = re.compile(
     r"\b(i do not have access|i don't have access|unable to provide|unable to access|contact (us|the clinic) directly|visit (us|the clinic))\b",
+    re.IGNORECASE,
+)
+KNOWLEDGE_BOT_PATTERN = re.compile(
+    r"\b(not explicitly mentioned|provided clinic knowledge|based on the information|according to the document|the document does not contain|the knowledge does not contain|not available in the information)\b",
     re.IGNORECASE,
 )
 MOBILE_NUMBER_PATTERN = re.compile(r"(?<!\d)(\d{10})(?!\d)")
@@ -290,13 +339,13 @@ TOOL_ARG_ALIASES = {
 }
 
 TOOL_FALLBACK_MESSAGES = {
-    "book_appointment": "I couldn't complete the booking request because some appointment details were missing or invalid. Please share the date, time, and mobile number again.",
-    "cancel_appointment": "I couldn't cancel the appointment because I need a valid mobile number.",
-    "update_appointment": "I couldn't update the appointment because some details were missing or invalid. Please share the mobile number and the new date or time again.",
-    "view_appointment": "I couldn't look up the appointment because I need a valid mobile number.",
-    "find_next_available_slot": "I couldn't check the next available slot just now. Please tell me the preferred date again and I'll retry.",
-    "get_current_weather": "I couldn't check the weather just now. Please share the city again and I'll retry.",
-    "search_clinic_knowledge": "I couldn't retrieve the clinic information just now. Please try asking the question once more.",
+    "book_appointment": "I need the mobile number, date, and time to book that.",
+    "cancel_appointment": "Please share the mobile number for that appointment.",
+    "update_appointment": "Please share the mobile number and the new date or time.",
+    "view_appointment": "Please share the mobile number for that appointment.",
+    "find_next_available_slot": "I couldn't check that just now. Please tell me the date again.",
+    "get_current_weather": "Please tell me the city again.",
+    "search_clinic_knowledge": "",
 }
 
 
@@ -318,9 +367,59 @@ def _handle_small_talk(messages: List[BaseMessage]) -> str | None:
     return None
 
 
+def _is_clinic_timings_query(messages: List[BaseMessage]) -> bool:
+    latest_user_message = _latest_user_message(messages)
+    if not latest_user_message:
+        return False
+    return any(pattern.search(latest_user_message) for pattern in TIMINGS_INTENT_PATTERNS)
+
+
+def _classify_intent(llm: ChatGroq, messages: List[BaseMessage]) -> str:
+    latest_user_message = _latest_user_message(messages)
+    if not latest_user_message:
+        return "casual"
+
+    recent_user_lines = [
+        f"user: {message.content}"
+        for message in messages[-6:]
+        if isinstance(message, HumanMessage)
+    ]
+    conversation_snippet = "\n".join(recent_user_lines)
+
+    try:
+        classified = llm.invoke(
+            [
+                SystemMessage(content=INTENT_CLASSIFIER_PROMPT),
+                HumanMessage(
+                    content=(
+                        f"Conversation:\n{conversation_snippet}\n\n"
+                        f"Latest message: {latest_user_message}"
+                    )
+                ),
+            ]
+        )
+        label = str(classified.content or "").strip().lower()
+    except Exception:
+        logger.exception("Intent classification failed")
+        label = ""
+
+    valid_labels = {
+        "booking",
+        "reschedule",
+        "cancel",
+        "clinic_info",
+        "irrelevant",
+        "casual",
+    }
+    return label if label in valid_labels else "casual"
+
+
 def _should_force_knowledge_tool(messages: List[BaseMessage]) -> bool:
     latest_user_message = _latest_user_message(messages).lower()
     if not latest_user_message:
+        return False
+
+    if _is_clinic_timings_query(messages):
         return False
 
     if any(keyword in latest_user_message for keyword in APPOINTMENT_KEYWORDS):
@@ -487,6 +586,70 @@ def _extract_known_time(messages: List[BaseMessage]) -> str | None:
     return None
 
 
+def _format_existing_appointment(mobile_number: str, appointment) -> str:
+    return (
+        f"You already have an appointment on {appointment.date.isoformat()} at "
+        f"{appointment.time.strftime('%H:%M')} for {mobile_number}. Do you want to book another one?"
+    )
+
+
+def _looks_like_another_booking_confirmation(text: str) -> bool:
+    lowered = text.lower().strip()
+    return any(
+        phrase in lowered
+        for phrase in (
+            "another appointment",
+            "book another",
+            "yes another",
+            "haan another",
+            "yes book",
+            "book one more",
+        )
+    )
+
+
+def _handle_booking_detail_collection(messages: List[BaseMessage], db: Session) -> str | None:
+    latest_user_message = _latest_user_message(messages)
+    if not latest_user_message:
+        return None
+
+    recent_user_messages = [
+        str(message.content).lower()
+        for message in messages[-6:]
+        if isinstance(message, HumanMessage)
+    ]
+    booking_context = any(
+        any(term in content for term in ("appointment", "book", "booking", "schedule"))
+        for content in recent_user_messages
+    )
+    if not booking_context:
+        return None
+
+    mobile_number = _extract_known_mobile(messages)
+    date_text = _extract_known_date(messages)
+    time_text = _extract_known_time(messages)
+
+    if not mobile_number:
+        return "Please share your mobile number."
+
+    existing_appointment = crud.get_upcoming_appointment_for_mobile(db, mobile_number)
+    if (
+        existing_appointment is not None
+        and not date_text
+        and not time_text
+        and not _looks_like_another_booking_confirmation(latest_user_message)
+    ):
+        return _format_existing_appointment(mobile_number, existing_appointment)
+
+    if not date_text:
+        return "What date would you like to come?"
+
+    if not time_text:
+        return "What time would you like?"
+
+    return None
+
+
 def _parse_next_slot_result(text: str) -> tuple[str, str] | None:
     match = NEXT_SLOT_RESULT_PATTERN.search(text)
     if not match:
@@ -620,6 +783,8 @@ def _answer_from_clinic_knowledge(
         return _fallback_answer_from_knowledge(user_question, knowledge_text)
     if ACCESS_DENIAL_PATTERN.search(content):
         return _fallback_answer_from_knowledge(user_question, knowledge_text)
+    if KNOWLEDGE_BOT_PATTERN.search(content):
+        return _fallback_answer_from_knowledge(user_question, knowledge_text)
     return content
 
 
@@ -677,7 +842,7 @@ def _fallback_answer_from_knowledge(user_question: str, knowledge_text: str) -> 
 
     cleaned = _clean_knowledge_content_for_user(candidate_text)
     if not cleaned:
-        return "I found relevant clinic information, but I couldn't format it clearly. Please try asking the question once more."
+        return ""
 
     sentence_split = re.split(r"(?<=[.!?])\s+", cleaned)
     summary = " ".join(sentence_split[:3]).strip()
@@ -686,6 +851,9 @@ def _fallback_answer_from_knowledge(user_question: str, knowledge_text: str) -> 
 
     if len(summary) > 500:
         summary = summary[:500].rsplit(" ", 1)[0].strip() + "..."
+
+    if KNOWLEDGE_BOT_PATTERN.search(summary):
+        return ""
 
     return summary
 
@@ -741,9 +909,12 @@ def _execute_tool_calls(
 def _build_fallback_reply(tool_results: list[tuple[str, str]]) -> str:
     meaningful_results = [result for _, result in tool_results if result.strip()]
     if not meaningful_results:
-        return "I'm sorry, I couldn't find a clear answer for that just now. If you rephrase the question or ask in a bit more detail, I'll do my best to help."
+        return "Sorry, can you say that again?"
     if len(tool_results) == 1 and tool_results[0][0] == "search_clinic_knowledge":
-        return _fallback_answer_from_knowledge("", tool_results[0][1])
+        knowledge_reply = _fallback_answer_from_knowledge("", tool_results[0][1])
+        if knowledge_reply:
+            return knowledge_reply
+        return "Sorry, can you say that again?"
     if len(meaningful_results) == 1:
         return meaningful_results[0]
     return "\n".join(meaningful_results)
@@ -770,6 +941,24 @@ def run_agent(messages: List[BaseMessage], db: Session) -> str:
     if small_talk_reply:
         return small_talk_reply
 
+    intent = _classify_intent(llm, messages)
+    if intent == "irrelevant":
+        try:
+            irrelevant_ai: AIMessage = llm.invoke(  # type: ignore[assignment]
+                [SystemMessage(content=SYSTEM_PROMPT), *messages]
+            )
+            irrelevant_reply = _strip_text_tool_calls(str(irrelevant_ai.content or "").strip())
+            if irrelevant_reply:
+                return irrelevant_reply
+        except Exception:
+            logger.exception("Irrelevant-intent reply generation failed")
+        return "Sorry, I can help with appointments or clinic info."
+
+    if intent == "booking":
+        booking_detail_reply = _handle_booking_detail_collection(messages, db)
+        if booking_detail_reply:
+            return booking_detail_reply
+
     forced_appointment_reply = _handle_forced_appointment_flow(messages, tools)
     if forced_appointment_reply:
         return forced_appointment_reply
@@ -779,7 +968,7 @@ def run_agent(messages: List[BaseMessage], db: Session) -> str:
     llm_with_tools = llm.bind_tools(tools)
 
     # Force retrieval for knowledge-style questions so the model does not skip the RAG tool.
-    if _should_force_knowledge_tool(messages):
+    if (intent == "clinic_info" and not _is_clinic_timings_query(messages)) or _should_force_knowledge_tool(messages):
         latest_user_message = _latest_user_message(messages)
         knowledge_tool = next(
             (tool for tool in tools if tool.name == "search_clinic_knowledge"), None
@@ -817,8 +1006,8 @@ def run_agent(messages: List[BaseMessage], db: Session) -> str:
         logger.exception("Initial Groq invocation failed")
         latest_user_message = _latest_user_message(messages)
         if latest_user_message:
-            return "I'm sorry, I can't help you with that. I can help with appointments or clinic information, try asking again."
-        return "I'm sorry, I couldn't respond properly just now. Please try again."
+            return "Sorry, can you say that again?"
+        return "Sorry, can you say that again?"
 
     explicit_tool_calls = list(getattr(ai_msg, "tool_calls", None) or [])
     if not explicit_tool_calls:
@@ -829,7 +1018,7 @@ def run_agent(messages: List[BaseMessage], db: Session) -> str:
         direct_reply = _strip_text_tool_calls(str(ai_msg.content or ""))
         if direct_reply:
             return direct_reply
-        return "I'm sorry, I couldn't put that into a clear reply. Please try rephrasing it."
+        return "Sorry, can you say that again?"
 
     # Run each requested tool once and add ToolMessage results to the history.
     tool_results = _execute_tool_calls(history, tools, explicit_tool_calls)
