@@ -12,7 +12,6 @@ def get_env(key: str, default: str | None = None) -> str:
 class Settings:
     # Groq API key (used by ChatGroq)
     GROQ_API_KEY: str = get_env("GROQ_API_KEY", "")
-    OPENWEATHERMAP_API_KEY: str = get_env("OPENWEATHERMAP_API_KEY", "")
     DATABASE_URL: str = get_env(
         "DATABASE_URL",
         "postgresql+psycopg://postgres:postgres@localhost:5432/appointments",

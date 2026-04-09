@@ -1,15 +1,11 @@
 import json
 from datetime import date, datetime, time, timedelta
-from urllib.error import HTTPError, URLError
-from urllib.parse import quote_plus
-from urllib.request import urlopen
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from . import crud
-from .config import settings
 from .datetime_utils import current_date, current_datetime, parse_date_input, parse_time_input
 from .rag import query_knowledge_base
 
@@ -42,10 +38,6 @@ class NextAvailableSlotInput(BaseModel):
         default=None,
         description="Optional date to start searching from. Accepts YYYY-MM-DD or natural dates like 5 April.",
     )
-
-
-class CurrentWeatherInput(BaseModel):
-    city: str = Field(description="City name to fetch current weather for")
 
 
 class ClinicKnowledgeInput(BaseModel):
@@ -174,64 +166,6 @@ def get_tools(db: Session) -> list:
 
         return "I couldn't find an available slot in the next 30 days."
 
-    @tool(args_schema=CurrentWeatherInput)
-    def get_current_weather(city: str) -> str:
-        """Get the current weather for a city using OpenWeatherMap."""
-        city_name = city.strip()
-        if not city_name:
-            return "Please provide a city name."
-
-        if not settings.OPENWEATHERMAP_API_KEY:
-            return "Weather service is not configured. Set OPENWEATHERMAP_API_KEY."
-
-        encoded_city = quote_plus(city_name)
-        url = (
-            "https://api.openweathermap.org/data/2.5/weather"
-            f"?q={encoded_city}&appid={settings.OPENWEATHERMAP_API_KEY}&units=metric"
-        )
-
-        try:
-            with urlopen(url, timeout=10) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except HTTPError as exc:
-            try:
-                error_payload = json.loads(exc.read().decode("utf-8"))
-            except Exception:
-                error_payload = {}
-            message = error_payload.get("message")
-            if exc.code == 404:
-                return f"I couldn't find current weather for '{city_name}'. Please check the city name and try again."
-            return f"Unable to fetch weather right now: {message or f'HTTP {exc.code}'}."
-        except URLError:
-            return "Unable to reach the weather service right now. Please try again in a moment."
-        except Exception:
-            return "Something went wrong while fetching the weather."
-
-        weather_items = payload.get("weather") or []
-        main = payload.get("main") or {}
-        wind = payload.get("wind") or {}
-        sys = payload.get("sys") or {}
-
-        description = weather_items[0].get("description", "unavailable") if weather_items else "unavailable"
-        temp = main.get("temp")
-        feels_like = main.get("feels_like")
-        humidity = main.get("humidity")
-        wind_speed = wind.get("speed")
-        country = sys.get("country")
-        resolved_name = payload.get("name") or city_name
-        location = f"{resolved_name}, {country}" if country else resolved_name
-
-        details = [f"Current weather in {location}: {description}."]
-        if temp is not None:
-            details.append(f"Temperature: {round(temp)} degrees C.")
-        if feels_like is not None:
-            details.append(f"Feels like: {round(feels_like)} degrees C.")
-        if humidity is not None:
-            details.append(f"Humidity: {humidity}%.")
-        if wind_speed is not None:
-            details.append(f"Wind speed: {wind_speed} m/s.")
-        return " ".join(details)
-
     @tool(args_schema=ClinicKnowledgeInput)
     def search_clinic_knowledge(query: str) -> str:
         """Retrieve relevant clinic knowledge from indexed PDFs and website content before answering informational questions."""
@@ -246,6 +180,5 @@ def get_tools(db: Session) -> list:
         update_appointment,
         view_appointment,
         find_next_available_slot,
-        get_current_weather,
         search_clinic_knowledge,
     ]

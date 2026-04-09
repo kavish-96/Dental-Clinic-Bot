@@ -292,6 +292,66 @@ def _build_pdf_semantic_variants(text: str) -> str:
     return "\n".join(variants)
 
 
+def _extract_website_focus_text(text: str) -> str:
+    """Keep the most answerable sections from crawled pages and trim navigation noise."""
+    normalized = _normalize_text(text)
+    if not normalized:
+        return ""
+
+    lines = [line.strip() for line in normalized.splitlines() if line.strip()]
+    if not lines:
+        return ""
+
+    focus_lines: list[str] = []
+    capture = False
+    for line in lines:
+        lowered = line.lower()
+        if any(
+            marker in lowered
+            for marker in (
+                "frequently asked questions",
+                "faq",
+                "documents & charges",
+                "interest rates",
+                "home buyers guide",
+            )
+        ):
+            capture = True
+
+        if capture:
+            focus_lines.append(line)
+
+    if focus_lines:
+        focused = "\n".join(focus_lines)
+        return focused[:12000].strip()
+
+    # Fallback to a trimmed normalized page if we could not find a clear FAQ/content section.
+    return "\n".join(lines[:250]).strip()
+
+
+def _build_website_semantic_variants(text: str, source: str) -> str:
+    """Augment crawled website content with concise semantic hints without changing architecture."""
+    focused = _extract_website_focus_text(text)
+    if not focused:
+        return ""
+
+    lower = focused.lower()
+    variants: list[str] = [focused]
+
+    if "faq" in lower or "frequently asked questions" in lower:
+        variants.append("faq questions answers help support common queries")
+    if "document" in lower or "documents" in lower:
+        variants.append("documents required checklist paperwork forms proofs")
+    if "charge" in lower or "charges" in lower or "fee" in lower:
+        variants.append("fees charges pricing cost amount")
+    if "interest rate" in lower:
+        variants.append("interest rate rates loan rate pricing")
+    if source:
+        variants.append(_normalize_text(source))
+
+    return "\n".join(variants)
+
+
 # ========================
 # QUERY EXPANSION
 # ========================
@@ -521,16 +581,6 @@ def _select_diverse_documents(docs: list[Document]) -> list[Document]:
     return selected
 
 
-def _prefer_pdf_documents(docs: list[Document]) -> list[Document]:
-    """When PDF evidence exists, prefer it over weaker website matches."""
-    pdf_docs = [
-        doc
-        for doc in docs
-        if str(doc.metadata.get("source_type", "")).strip().lower() == "pdf"
-    ]
-    return pdf_docs or docs
-
-
 def _retrieve_semantic_documents(vector_store, query_variants: list[str]) -> list[Document]:
     """Retrieve across multiple semantic phrasings and merge results without changing architecture."""
     if not query_variants:
@@ -601,7 +651,7 @@ def _retrieve_semantic_documents(vector_store, query_variants: list[str]) -> lis
             float(doc.metadata.get("retrieval_score", 0.0)),
         )
     )
-    return _prefer_pdf_documents(merged_docs)
+    return merged_docs
 
 
 def _build_context_blocks(docs: list[Document]) -> list[str]:
@@ -821,7 +871,7 @@ def load_crawl_documents(
 
         content = str(item.get("content", "")).strip()
         url = str(item.get("url", "")).strip()
-        normalized_content = _normalize_text(content)
+        normalized_content = _build_website_semantic_variants(content, url)
         if not normalized_content:
             continue
 
@@ -1049,7 +1099,7 @@ def query_knowledge_base(query: str) -> str:
     if not docs:
         return "No relevant clinic knowledge was found for that question."
 
-    diverse_docs = _select_diverse_documents(_prefer_pdf_documents(docs))
+    diverse_docs = _select_diverse_documents(docs)
     context_blocks = _build_context_blocks(diverse_docs)
     if not context_blocks:
         return "Relevant documents were retrieved, but they did not contain usable text."
@@ -1102,6 +1152,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 
 

@@ -32,8 +32,10 @@ Today's date is {current_date().isoformat()}.
 Current local date and time is {current_datetime().strftime("%Y-%m-%d %H:%M")}.
 
 IMPORTANT RULES:
+- The answer should be short and precise to question, dont overflood the information.
 - Never mention knowledge base, data availability, RAG, functions, tools, internal logic, or system behavior.
 - Never expose raw document text or raw tool output.
+- If the user mentions whom to contact for booking, appointment, or scheduling in any form (even along with words like contact, call, or reach), prioritize helping them book the appointment directly instead of only giving contact details.
 - If something is missing, ask politely for only the missing detail.
 - If the user asks something unrelated, fallback by giving valid reasoning.
 - If the answer is unknown, fallback by giving valid reasoning.
@@ -51,14 +53,13 @@ IMPORTANT RULES:
 - Clinic timings are 9am to 8pm.
 - If the user asks when they can visit or asks for clinic timings, answer directly using the clinic timings above in a short natural way.
 - If the user asks for a time outside range of clinic timings, inform them about the clinic timings mentioned above.
-- Use ONLY the provided tools to book, cancel, update, view appointments, get current weather, or retrieve clinic information.
+- Use ONLY the provided tools to book, cancel, update, view appointments, or retrieve clinic information.
 - Use the exact tool argument names:
   book_appointment(mobile_number, date, time),
   cancel_appointment(mobile_number),
   update_appointment(mobile_number, new_date, new_time),
   view_appointment(mobile_number),
   find_next_available_slot(start_date),
-  get_current_weather(city),
   search_clinic_knowledge(query).
 - For any question that depends on clinic documents or website content, always use the clinic knowledge tool before answering.
 - Dates may be passed as YYYY-MM-DD or natural dates like 5 April; times in HH:MM or HH:MM AM/PM."""
@@ -76,6 +77,7 @@ Valid labels:
 Rules:
 - Use meaning, not keywords only.
 - booking includes wanting to come, visit, schedule, book, or asking for the next slot.
+- booking also includes asking whom to contact, call, reach, or speak to for an appointment or booking help.
 - reschedule includes changing appointment date or time.
 - cancel includes cancelling or removing an appointment.
 - clinic_info includes services, doctors, timings, pricing, FAQs, symptoms related to dental care, or treatment information.
@@ -83,6 +85,48 @@ Rules:
 - irrelevant includes topics unrelated to the clinic.
 
 Reply with only one label."""
+
+APPOINTMENT_COLLECTION_PROMPT = """You are a friendly dental clinic receptionist.
+Decide whether the user's latest message means they are actively trying to manage an appointment right now, or just asking a general question.
+
+Reply with only one label:
+- collect: the user is actively trying to book, reschedule, cancel, view, or confirm an appointment now
+- answer: the user is asking a general question and should be answered normally instead of collecting details
+
+Use meaning, not keywords only.
+
+Examples:
+- "I want to book an appointment" -> collect
+- "my number is 9876543210" -> collect
+- "tomorrow at 5 pm" -> collect
+- "whom should I contact for appointment" -> collect
+- "what are your appointment timings" -> answer
+- "how do I book" -> answer
+"""
+
+APPOINTMENT_FOLLOWUP_PROMPT = """You are a friendly dental clinic receptionist.
+Write one short natural reply for the user.
+
+Rules:
+- Sound human and conversational.
+- Ask only for the next missing details if needed.
+- Do not mention tools, system behavior, or internal logic.
+- Do not invent any appointment date or time.
+- If the person already has an upcoming appointment and has not clearly asked to book another one, mention it briefly and ask if they want another appointment.
+- Keep it concise.
+"""
+
+IRRELEVANT_REDIRECT_PROMPT = """You are a friendly dental clinic receptionist.
+The user's message is unrelated to the clinic.
+
+Rules:
+- Do not answer or explain the unrelated topic.
+- Do not give facts, definitions, reasoning, or educational content about it.
+- Reply in short natural sentence only.
+- Politely say you cant answer the unrelated topic and redirect to clinic related information or appointment booking.
+- Sound human, not robotic.
+
+Reply with only the final user-facing sentence."""
 
 KNOWLEDGE_KEYWORDS = {
     "pdf",
@@ -170,13 +214,20 @@ APPOINTMENT_KEYWORDS = {
     "number",
 }
 
-WEATHER_KEYWORDS = {
-    "weather",
-    "temperature",
-    "forecast",
-    "rain",
-    "wind",
-}
+APPOINTMENT_CONTACT_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(
+        r"\b(?:who|whom)\s+(?:should\s+i\s+)?(?:contact|call|reach|message)\b.*\b(?:appointment|book|booking|schedule)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:contact|call|reach|message)\b.*\b(?:appointment|book|booking|schedule)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:appointment|book|booking|schedule)\b.*\b(?:contact|call|reach|message)\b",
+        re.IGNORECASE,
+    ),
+]
 
 KNOWLEDGE_INTENT_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"\bdo you have\b", re.IGNORECASE),
@@ -242,7 +293,7 @@ CHAT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     ),
     (
         re.compile(r"^\s*(who are you|what can you do)\s*[?!]*\s*$", re.IGNORECASE),
-        "I'm the clinic assistant. I can help book, update, cancel, or view appointments, answer clinic questions, and share the current weather.",
+        "I'm the clinic assistant. I can help book, update, cancel, or view appointments and answer clinic questions.",
     ),
 ]
 
@@ -279,6 +330,10 @@ ACCESS_DENIAL_PATTERN = re.compile(
 )
 KNOWLEDGE_BOT_PATTERN = re.compile(
     r"\b(not explicitly mentioned|provided clinic knowledge|based on the information|according to the document|the document does not contain|the knowledge does not contain|not available in the information)\b",
+    re.IGNORECASE,
+)
+EMPTY_KNOWLEDGE_RESULT_PATTERN = re.compile(
+    r"\b(no relevant clinic knowledge was found|knowledge base is empty|relevant documents were retrieved, but they did not contain usable text|unable to query the clinic knowledge base right now)\b",
     re.IGNORECASE,
 )
 MOBILE_NUMBER_PATTERN = re.compile(r"(?<!\d)(\d{10})(?!\d)")
@@ -332,10 +387,6 @@ TOOL_ARG_ALIASES = {
         "startDate": "start_date",
         "day": "start_date",
     },
-    "get_current_weather": {
-        "location": "city",
-        "place": "city",
-    },
 }
 
 TOOL_FALLBACK_MESSAGES = {
@@ -344,7 +395,6 @@ TOOL_FALLBACK_MESSAGES = {
     "update_appointment": "Please share the mobile number and the new date or time.",
     "view_appointment": "Please share the mobile number for that appointment.",
     "find_next_available_slot": "I couldn't check that just now. Please tell me the date again.",
-    "get_current_weather": "Please tell me the city again.",
     "search_clinic_knowledge": "",
 }
 
@@ -374,10 +424,18 @@ def _is_clinic_timings_query(messages: List[BaseMessage]) -> bool:
     return any(pattern.search(latest_user_message) for pattern in TIMINGS_INTENT_PATTERNS)
 
 
+def _looks_like_appointment_contact_request(text: str) -> bool:
+    if not text:
+        return False
+    return any(pattern.search(text) for pattern in APPOINTMENT_CONTACT_PATTERNS)
+
+
 def _classify_intent(llm: ChatGroq, messages: List[BaseMessage]) -> str:
     latest_user_message = _latest_user_message(messages)
     if not latest_user_message:
         return "casual"
+    if _looks_like_appointment_contact_request(latest_user_message):
+        return "booking"
 
     recent_user_lines = [
         f"user: {message.content}"
@@ -414,6 +472,39 @@ def _classify_intent(llm: ChatGroq, messages: List[BaseMessage]) -> str:
     return label if label in valid_labels else "casual"
 
 
+def _should_collect_appointment_details(llm: ChatGroq, messages: List[BaseMessage]) -> bool:
+    latest_user_message = _latest_user_message(messages)
+    if not latest_user_message:
+        return False
+    if _looks_like_appointment_contact_request(latest_user_message):
+        return True
+
+    recent_user_lines = [
+        f"user: {message.content}"
+        for message in messages[-6:]
+        if isinstance(message, HumanMessage)
+    ]
+    conversation_snippet = "\n".join(recent_user_lines)
+
+    try:
+        classified = llm.invoke(
+            [
+                SystemMessage(content=APPOINTMENT_COLLECTION_PROMPT),
+                HumanMessage(
+                    content=(
+                        f"Conversation:\n{conversation_snippet}\n\n"
+                        f"Latest message: {latest_user_message}"
+                    )
+                ),
+            ]
+        )
+        label = str(classified.content or "").strip().lower()
+        return label == "collect"
+    except Exception:
+        logger.exception("Appointment collection classification failed")
+        return False
+
+
 def _should_force_knowledge_tool(messages: List[BaseMessage]) -> bool:
     latest_user_message = _latest_user_message(messages).lower()
     if not latest_user_message:
@@ -421,12 +512,11 @@ def _should_force_knowledge_tool(messages: List[BaseMessage]) -> bool:
 
     if _is_clinic_timings_query(messages):
         return False
+    if _looks_like_appointment_contact_request(latest_user_message):
+        return False
 
     if any(keyword in latest_user_message for keyword in APPOINTMENT_KEYWORDS):
         return False
-    if any(keyword in latest_user_message for keyword in WEATHER_KEYWORDS):
-        return False
-
     if "?" in latest_user_message:
         return True
 
@@ -608,29 +698,21 @@ def _looks_like_another_booking_confirmation(text: str) -> bool:
     )
 
 
-def _handle_booking_detail_collection(messages: List[BaseMessage], db: Session) -> str | None:
+def _handle_booking_detail_collection(
+    llm: ChatGroq,
+    messages: List[BaseMessage],
+    db: Session,
+) -> str | None:
     latest_user_message = _latest_user_message(messages)
     if not latest_user_message:
         return None
 
-    recent_user_messages = [
-        str(message.content).lower()
-        for message in messages[-6:]
-        if isinstance(message, HumanMessage)
-    ]
-    booking_context = any(
-        any(term in content for term in ("appointment", "book", "booking", "schedule"))
-        for content in recent_user_messages
-    )
-    if not booking_context:
+    if not _should_collect_appointment_details(llm, messages):
         return None
 
     mobile_number = _extract_known_mobile(messages)
     date_text = _extract_known_date(messages)
     time_text = _extract_known_time(messages)
-
-    if not mobile_number:
-        return "Please share your mobile number."
 
     existing_appointment = crud.get_upcoming_appointment_for_mobile(db, mobile_number)
     if (
@@ -639,13 +721,42 @@ def _handle_booking_detail_collection(messages: List[BaseMessage], db: Session) 
         and not time_text
         and not _looks_like_another_booking_confirmation(latest_user_message)
     ):
-        return _format_existing_appointment(mobile_number, existing_appointment)
+        appointment_summary = _format_existing_appointment(mobile_number, existing_appointment)
+    else:
+        appointment_summary = ""
 
-    if not date_text:
-        return "What date would you like to come?"
+    if mobile_number and date_text and time_text:
+        return None
 
-    if not time_text:
-        return "What time would you like?"
+    missing_details: list[str] = []
+    if not mobile_number:
+        missing_details.append("mobile number")
+    if mobile_number and not date_text:
+        missing_details.append("appointment date")
+    if mobile_number and date_text and not time_text:
+        missing_details.append("appointment time")
+
+    try:
+        followup_ai: AIMessage = llm.invoke(  # type: ignore[assignment]
+            [
+                SystemMessage(content=APPOINTMENT_FOLLOWUP_PROMPT),
+                HumanMessage(
+                    content=(
+                        f"Latest user message: {latest_user_message}\n"
+                        f"Known mobile number: {mobile_number or 'missing'}\n"
+                        f"Known appointment date: {date_text or 'missing'}\n"
+                        f"Known appointment time: {time_text or 'missing'}\n"
+                        f"Existing upcoming appointment: {appointment_summary or 'none'}\n"
+                        f"Next thing needed: {missing_details[0] if missing_details else 'nothing'}"
+                    )
+                ),
+            ]
+        )
+        reply = _strip_text_tool_calls(str(followup_ai.content or "").strip())
+        if reply:
+            return reply
+    except Exception:
+        logger.exception("Appointment follow-up generation failed")
 
     return None
 
@@ -786,6 +897,13 @@ def _answer_from_clinic_knowledge(
     if KNOWLEDGE_BOT_PATTERN.search(content):
         return _fallback_answer_from_knowledge(user_question, knowledge_text)
     return content
+
+
+def _has_meaningful_knowledge_result(knowledge_text: str) -> bool:
+    cleaned = str(knowledge_text or "").strip()
+    if not cleaned:
+        return False
+    return EMPTY_KNOWLEDGE_RESULT_PATTERN.search(cleaned) is None
 
 
 def _extract_knowledge_source_blocks(knowledge_text: str) -> list[tuple[str, str]]:
@@ -932,6 +1050,8 @@ def run_agent(messages: List[BaseMessage], db: Session) -> str:
 
     llm = ChatGroq(
         model="llama-3.3-70b-versatile",
+        # llama-3.1-8b-instant
+        # llama-3.3-70b-versatile
         temperature=0,
         api_key=settings.GROQ_API_KEY,
     )
@@ -943,9 +1063,30 @@ def run_agent(messages: List[BaseMessage], db: Session) -> str:
 
     intent = _classify_intent(llm, messages)
     if intent == "irrelevant":
+        latest_user_message = _latest_user_message(messages)
+        knowledge_tool = next(
+            (tool for tool in tools if tool.name == "search_clinic_knowledge"), None
+        )
+        if knowledge_tool is not None and latest_user_message:
+            try:
+                knowledge_result = str(
+                    knowledge_tool.invoke({"query": latest_user_message})
+                )
+                if _has_meaningful_knowledge_result(knowledge_result):
+                    return _answer_from_clinic_knowledge(
+                        llm,
+                        latest_user_message,
+                        knowledge_result,
+                    )
+            except Exception:
+                logger.exception("Knowledge lookup during irrelevant-intent handling failed")
+
         try:
             irrelevant_ai: AIMessage = llm.invoke(  # type: ignore[assignment]
-                [SystemMessage(content=SYSTEM_PROMPT), *messages]
+                [
+                    SystemMessage(content=IRRELEVANT_REDIRECT_PROMPT),
+                    HumanMessage(content=latest_user_message),
+                ]
             )
             irrelevant_reply = _strip_text_tool_calls(str(irrelevant_ai.content or "").strip())
             if irrelevant_reply:
@@ -955,7 +1096,7 @@ def run_agent(messages: List[BaseMessage], db: Session) -> str:
         return "Sorry, I can help with appointments or clinic info."
 
     if intent == "booking":
-        booking_detail_reply = _handle_booking_detail_collection(messages, db)
+        booking_detail_reply = _handle_booking_detail_collection(llm, messages, db)
         if booking_detail_reply:
             return booking_detail_reply
 
