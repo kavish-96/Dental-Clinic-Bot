@@ -128,6 +128,17 @@ Rules:
 
 Reply with only the final user-facing sentence."""
 
+CONTEXT_RESOLUTION_PROMPT = """Rewrite the user's latest message into a standalone dental-clinic message using the recent conversation.
+
+Rules:
+- Preserve the user's latest meaning exactly.
+- Resolve references like it, them, that, this, those, these, same, yes, no, okay, or follow-up wording from recent conversation.
+- Keep the rewritten message concise and natural.
+- If the latest message is already standalone, return it unchanged.
+- Do not answer the user.
+- Output only the rewritten standalone message.
+"""
+
 KNOWLEDGE_KEYWORDS = {
     "pdf",
     "website",
@@ -229,6 +240,12 @@ APPOINTMENT_CONTACT_PATTERNS: list[re.Pattern[str]] = [
     ),
 ]
 
+CONTEXT_REFERENCE_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"\b(it|them|they|that|this|those|these|there|same)\b", re.IGNORECASE),
+    re.compile(r"^\s*(yes|yeah|yep|yup|haan|ha|ok|okay|sure|please|no|nope|nah)\s*[.!?]*\s*$", re.IGNORECASE),
+    re.compile(r"^\s*(what about|how about|and what about|and|also)\b", re.IGNORECASE),
+]
+
 KNOWLEDGE_INTENT_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"\bdo you have\b", re.IGNORECASE),
     re.compile(r"\bi want\b", re.IGNORECASE),
@@ -250,6 +267,7 @@ KNOWLEDGE_INTENT_PATTERNS: list[re.Pattern[str]] = [
 
 KNOWLEDGE_SUMMARY_PROMPT = """You are a friendly dental clinic receptionist.
 Answer the user's question in a short, natural, human way.
+The answer should be short and precise to question, dont overflood the information.
 Use only the clinic information provided below.
 Use semantic understanding, not exact keyword matching.
 If the answer is present with different wording, still answer naturally.
@@ -406,9 +424,60 @@ def _latest_user_message(messages: List[BaseMessage]) -> str:
     return ""
 
 
+def _recent_conversation_snippet(messages: List[BaseMessage], limit: int = 6) -> str:
+    lines: list[str] = []
+    for message in messages[-limit:]:
+        if isinstance(message, HumanMessage):
+            lines.append(f"user: {message.content}")
+        elif isinstance(message, AIMessage):
+            lines.append(f"assistant: {message.content}")
+    return "\n".join(lines)
+
+
+def _needs_context_resolution(messages: List[BaseMessage]) -> bool:
+    latest_user_message = _latest_user_message(messages)
+    if not latest_user_message:
+        return False
+    if not any(isinstance(message, AIMessage) for message in messages[:-1]):
+        return False
+    return any(pattern.search(latest_user_message) for pattern in CONTEXT_REFERENCE_PATTERNS)
+
+
+def _resolve_user_message_with_context(llm: ChatGroq, messages: List[BaseMessage]) -> str:
+    latest_user_message = _latest_user_message(messages)
+    if not latest_user_message or not _needs_context_resolution(messages):
+        return latest_user_message
+
+    conversation_snippet = _recent_conversation_snippet(messages)
+    if not conversation_snippet:
+        return latest_user_message
+
+    try:
+        rewritten = llm.invoke(
+            [
+                SystemMessage(content=CONTEXT_RESOLUTION_PROMPT),
+                HumanMessage(
+                    content=(
+                        f"Recent conversation:\n{conversation_snippet}\n\n"
+                        f"Latest user message: {latest_user_message}"
+                    )
+                ),
+            ]
+        )
+        rewritten_text = _strip_text_tool_calls(str(rewritten.content or "").strip())
+        if rewritten_text:
+            return rewritten_text
+    except Exception:
+        logger.exception("Context resolution failed")
+
+    return latest_user_message
+
+
 def _handle_small_talk(messages: List[BaseMessage]) -> str | None:
     latest_user_message = _latest_user_message(messages)
     if not latest_user_message:
+        return None
+    if _needs_context_resolution(messages):
         return None
 
     for pattern, reply in CHAT_PATTERNS:
@@ -430,19 +499,18 @@ def _looks_like_appointment_contact_request(text: str) -> bool:
     return any(pattern.search(text) for pattern in APPOINTMENT_CONTACT_PATTERNS)
 
 
-def _classify_intent(llm: ChatGroq, messages: List[BaseMessage]) -> str:
-    latest_user_message = _latest_user_message(messages)
+def _classify_intent(
+    llm: ChatGroq,
+    messages: List[BaseMessage],
+    latest_user_message: str | None = None,
+) -> str:
+    latest_user_message = latest_user_message or _latest_user_message(messages)
     if not latest_user_message:
         return "casual"
     if _looks_like_appointment_contact_request(latest_user_message):
         return "booking"
 
-    recent_user_lines = [
-        f"user: {message.content}"
-        for message in messages[-6:]
-        if isinstance(message, HumanMessage)
-    ]
-    conversation_snippet = "\n".join(recent_user_lines)
+    conversation_snippet = _recent_conversation_snippet(messages)
 
     try:
         classified = llm.invoke(
@@ -472,19 +540,18 @@ def _classify_intent(llm: ChatGroq, messages: List[BaseMessage]) -> str:
     return label if label in valid_labels else "casual"
 
 
-def _should_collect_appointment_details(llm: ChatGroq, messages: List[BaseMessage]) -> bool:
-    latest_user_message = _latest_user_message(messages)
+def _should_collect_appointment_details(
+    llm: ChatGroq,
+    messages: List[BaseMessage],
+    latest_user_message: str | None = None,
+) -> bool:
+    latest_user_message = latest_user_message or _latest_user_message(messages)
     if not latest_user_message:
         return False
     if _looks_like_appointment_contact_request(latest_user_message):
         return True
 
-    recent_user_lines = [
-        f"user: {message.content}"
-        for message in messages[-6:]
-        if isinstance(message, HumanMessage)
-    ]
-    conversation_snippet = "\n".join(recent_user_lines)
+    conversation_snippet = _recent_conversation_snippet(messages)
 
     try:
         classified = llm.invoke(
@@ -505,8 +572,12 @@ def _should_collect_appointment_details(llm: ChatGroq, messages: List[BaseMessag
         return False
 
 
-def _should_force_knowledge_tool(messages: List[BaseMessage]) -> bool:
-    latest_user_message = _latest_user_message(messages).lower()
+def _should_force_knowledge_tool(
+    messages: List[BaseMessage],
+    latest_user_message: str | None = None,
+) -> bool:
+    raw_message = latest_user_message or _latest_user_message(messages)
+    latest_user_message = raw_message.lower()
     if not latest_user_message:
         return False
 
@@ -702,12 +773,13 @@ def _handle_booking_detail_collection(
     llm: ChatGroq,
     messages: List[BaseMessage],
     db: Session,
+    latest_user_message: str | None = None,
 ) -> str | None:
-    latest_user_message = _latest_user_message(messages)
+    latest_user_message = latest_user_message or _latest_user_message(messages)
     if not latest_user_message:
         return None
 
-    if not _should_collect_appointment_details(llm, messages):
+    if not _should_collect_appointment_details(llm, messages, latest_user_message):
         return None
 
     mobile_number = _extract_known_mobile(messages)
@@ -793,8 +865,12 @@ def _looks_like_book_next_slot_request(text: str) -> bool:
     )
 
 
-def _handle_forced_appointment_flow(messages: List[BaseMessage], tools: list) -> str | None:
-    latest_user_message = _latest_user_message(messages)
+def _handle_forced_appointment_flow(
+    messages: List[BaseMessage],
+    tools: list,
+    latest_user_message: str | None = None,
+) -> str | None:
+    latest_user_message = latest_user_message or _latest_user_message(messages)
     if not latest_user_message:
         return None
 
@@ -876,6 +952,7 @@ def _answer_from_clinic_knowledge(
     llm: ChatGroq,
     user_question: str,
     knowledge_text: str,
+    conversation_snippet: str = "",
 ) -> str:
     """Use a plain answer-only prompt so tool syntax never leaks into chat."""
     final_ai: AIMessage = llm.invoke(  # type: ignore[assignment]
@@ -883,6 +960,7 @@ def _answer_from_clinic_knowledge(
             SystemMessage(content=KNOWLEDGE_SUMMARY_PROMPT),
             HumanMessage(
                 content=(
+                    f"Recent conversation:\n{conversation_snippet or 'none'}\n\n"
                     f"User question: {user_question}\n\n"
                     f"Clinic knowledge:\n{knowledge_text}"
                 )
@@ -1061,22 +1139,26 @@ def run_agent(messages: List[BaseMessage], db: Session) -> str:
     if small_talk_reply:
         return small_talk_reply
 
-    intent = _classify_intent(llm, messages)
+    latest_user_message = _latest_user_message(messages)
+    resolved_user_message = _resolve_user_message_with_context(llm, messages)
+    conversation_snippet = _recent_conversation_snippet(messages)
+
+    intent = _classify_intent(llm, messages, resolved_user_message)
     if intent == "irrelevant":
-        latest_user_message = _latest_user_message(messages)
         knowledge_tool = next(
             (tool for tool in tools if tool.name == "search_clinic_knowledge"), None
         )
-        if knowledge_tool is not None and latest_user_message:
+        if knowledge_tool is not None and resolved_user_message:
             try:
                 knowledge_result = str(
-                    knowledge_tool.invoke({"query": latest_user_message})
+                    knowledge_tool.invoke({"query": resolved_user_message})
                 )
                 if _has_meaningful_knowledge_result(knowledge_result):
                     return _answer_from_clinic_knowledge(
                         llm,
-                        latest_user_message,
+                        resolved_user_message,
                         knowledge_result,
+                        conversation_snippet,
                     )
             except Exception:
                 logger.exception("Knowledge lookup during irrelevant-intent handling failed")
@@ -1085,7 +1167,7 @@ def run_agent(messages: List[BaseMessage], db: Session) -> str:
             irrelevant_ai: AIMessage = llm.invoke(  # type: ignore[assignment]
                 [
                     SystemMessage(content=IRRELEVANT_REDIRECT_PROMPT),
-                    HumanMessage(content=latest_user_message),
+                    HumanMessage(content=resolved_user_message or latest_user_message),
                 ]
             )
             irrelevant_reply = _strip_text_tool_calls(str(irrelevant_ai.content or "").strip())
@@ -1096,28 +1178,43 @@ def run_agent(messages: List[BaseMessage], db: Session) -> str:
         return "Sorry, I can help with appointments or clinic info."
 
     if intent == "booking":
-        booking_detail_reply = _handle_booking_detail_collection(llm, messages, db)
+        booking_detail_reply = _handle_booking_detail_collection(
+            llm,
+            messages,
+            db,
+            resolved_user_message,
+        )
         if booking_detail_reply:
             return booking_detail_reply
 
-    forced_appointment_reply = _handle_forced_appointment_flow(messages, tools)
+    forced_appointment_reply = _handle_forced_appointment_flow(
+        messages,
+        tools,
+        resolved_user_message,
+    )
     if forced_appointment_reply:
         return forced_appointment_reply
 
     # First call: allow the model to decide whether to call tools.
     history: List[BaseMessage] = [SystemMessage(content=SYSTEM_PROMPT), *messages]
+    if resolved_user_message and resolved_user_message != latest_user_message:
+        history.insert(
+            1,
+            SystemMessage(
+                content=f"Interpret the latest user message in context as: {resolved_user_message}"
+            ),
+        )
     llm_with_tools = llm.bind_tools(tools)
 
     # Force retrieval for knowledge-style questions so the model does not skip the RAG tool.
-    if (intent == "clinic_info" and not _is_clinic_timings_query(messages)) or _should_force_knowledge_tool(messages):
-        latest_user_message = _latest_user_message(messages)
+    if (intent == "clinic_info" and not _is_clinic_timings_query(messages)) or _should_force_knowledge_tool(messages, resolved_user_message):
         knowledge_tool = next(
             (tool for tool in tools if tool.name == "search_clinic_knowledge"), None
         )
-        if knowledge_tool is not None and latest_user_message:
+        if knowledge_tool is not None and resolved_user_message:
             try:
                 knowledge_result = str(
-                    knowledge_tool.invoke({"query": latest_user_message})
+                    knowledge_tool.invoke({"query": resolved_user_message})
                 )
             except Exception:
                 logger.exception("Forced clinic knowledge retrieval failed")
@@ -1129,15 +1226,16 @@ def run_agent(messages: List[BaseMessage], db: Session) -> str:
             try:
                 return _answer_from_clinic_knowledge(
                     llm,
-                    latest_user_message,
+                    resolved_user_message,
                     knowledge_result,
+                    conversation_snippet,
                 )
             except Exception:
                 logger.exception(
                     "Final Groq summarization failed after forced knowledge retrieval"
                 )
                 return _fallback_answer_from_knowledge(
-                    latest_user_message,
+                    resolved_user_message,
                     knowledge_result,
                 )
 
