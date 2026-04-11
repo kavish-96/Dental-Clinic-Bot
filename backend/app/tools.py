@@ -21,10 +21,14 @@ class BookAppointmentInput(BaseModel):
 
 class CancelAppointmentInput(BaseModel):
     mobile_number: str = Field(description="User's mobile number")
+    date: str | None = Field(default=None, description="Date of the appointment to cancel (YYYY-MM-DD)")
+    time: str | None = Field(default=None, description="Time of the appointment to cancel (HH:MM)")
 
 
 class UpdateAppointmentInput(BaseModel):
     mobile_number: str = Field(description="User's mobile number")
+    old_date: str | None = Field(default=None, description="Date of the existing appointment (YYYY-MM-DD)")
+    old_time: str | None = Field(default=None, description="Time of the existing appointment (HH:MM)")
     new_date: str | None = Field(default=None, description="New date, e.g. YYYY-MM-DD or 5 April")
     new_time: str | None = Field(default=None, description="New time HH:MM or HH:MM AM/PM")
 
@@ -85,49 +89,69 @@ def get_tools(db: Session) -> list:
         )
 
     @tool(args_schema=CancelAppointmentInput)
-    def cancel_appointment(mobile_number: str) -> str:
-        """Cancel the appointment for this mobile number."""
-        ok = crud.cancel_upcoming_for_mobile(db, mobile_number)
+    def cancel_appointment(mobile_number: str, date: str | None = None, time: str | None = None) -> str:
+        """Cancel an appointment for this mobile number."""
+        upcoming = crud.get_upcoming_appointments_for_mobile(db, mobile_number)
+        if not upcoming:
+            return f"No upcoming appointments found for {mobile_number}."
+        
+        if not date or not time:
+            msg = f"Upcoming appointments for {mobile_number}:\n"
+            for u in upcoming:
+                msg += f"- {u.date.isoformat()} at {u.time.strftime('%H:%M')}\n"
+            if len(upcoming) == 1:
+                msg += "\nPlease confirm that you want to cancel this appointment by specifying its date and time."
+            else:
+                msg += "\nPlease specify the date and time of the appointment you want to cancel."
+            return msg
+            
+        try:
+            d = _parse_date(date)
+            t = _parse_time(time)
+        except ValueError as e:
+            return str(e)
+
+        ok = crud.cancel_specific_appointment(db, mobile_number, d, t)
         if not ok:
-            return f"No appointment found for {mobile_number}."
-        return f"Your appointment for {mobile_number} has been cancelled."
+            return f"No appointment found on {d.isoformat()} at {t.strftime('%H:%M')} for {mobile_number} to cancel."
+        return f"Your appointment for {mobile_number} on {d.isoformat()} at {t.strftime('%H:%M')} has been cancelled."
 
     @tool(args_schema=UpdateAppointmentInput)
     def update_appointment(
         mobile_number: str,
+        old_date: str | None = None,
+        old_time: str | None = None,
         new_date: str | None = None,
         new_time: str | None = None,
     ) -> str:
-        """Update the appointment's date and/or time for this mobile number."""
+        """Update an appointment's date and/or time for this mobile number."""
+        upcoming = crud.get_upcoming_appointments_for_mobile(db, mobile_number)
+        if not upcoming:
+            return f"No upcoming appointments found for {mobile_number}."
+
+        if not old_date or not old_time or (not new_date and not new_time):
+            msg = f"Upcoming appointments for {mobile_number}:\n"
+            for u in upcoming:
+                msg += f"- {u.date.isoformat()} at {u.time.strftime('%H:%M')}\n"
+            
+            if not old_date or not old_time:
+                msg += "\nPlease specify the current date and time of the appointment you'd like to update, AND the new date and time."
+            elif not new_date and not new_time:
+                msg += f"\nYou selected the appointment on {old_date} at {old_time}. What is the new date and time?"
+            return msg
+
         try:
-            d = _parse_date(new_date) if new_date else None
-            t = _parse_time(new_time) if new_time else None
+            od = _parse_date(old_date)
+            ot = _parse_time(old_time)
+            nd = _parse_date(new_date) if new_date else None
+            nt = _parse_time(new_time) if new_time else None
         except ValueError as e:
             return str(e)
-        if d is None and t is None:
-            return "Provide at least a new_date or new_time to update the appointment."
-        current_appointment = crud.get_upcoming_appointment_for_mobile(db, mobile_number)
-        if not current_appointment:
-            return f"No appointment found for {mobile_number}."
 
-        target_date = d if d is not None else current_appointment.date
-        target_time = t if t is not None else current_appointment.time
-        if crud.is_slot_in_past(target_date, target_time):
-            return "Appointments can only be updated to a future date and time."
-        if not crud.is_slot_available(
-            db,
-            target_date,
-            target_time,
-            exclude_appointment_id=current_appointment.id,
-        ):
-            return (
-                f"The slot on {target_date.isoformat()} at {target_time.strftime('%H:%M')} "
-                "is already booked. Please choose another time."
-            )
-
-        apt = crud.update_upcoming_for_mobile(db, mobile_number, date_val=d, time_val=t)
+        apt = crud.update_specific_appointment(db, mobile_number, od, ot, nd, nt)
         if not apt:
-            return "I couldn't update that appointment. Please try a different future time slot."
+            return f"I couldn't update the appointment. Ensure you have an appointment on {od.isoformat()} at {ot.strftime('%H:%M')} and the new slot is available in the future."
+            
         return (
             f"Appointment for {mobile_number} updated to "
             f"{apt.date.isoformat()} at {apt.time.strftime('%H:%M')}."
@@ -135,14 +159,15 @@ def get_tools(db: Session) -> list:
 
     @tool(args_schema=ViewAppointmentInput)
     def view_appointment(mobile_number: str) -> str:
-        """View the appointment for this mobile number."""
-        apt = crud.get_upcoming_appointment_for_mobile(db, mobile_number)
-        if not apt:
+        """View the appointments for this mobile number."""
+        upcoming = crud.get_upcoming_appointments_for_mobile(db, mobile_number)
+        if not upcoming:
             return f"You do not have any appointments for {mobile_number}."
-        return (
-            f"You have an appointment on {apt.date.isoformat()} at "
-            f"{apt.time.strftime('%H:%M')} for mobile {mobile_number}."
-        )
+        
+        msg = f"You have the following upcoming appointments for {mobile_number}:\n"
+        for u in upcoming:
+            msg += f"- {u.date.isoformat()} at {u.time.strftime('%H:%M')}\n"
+        return msg.strip()
 
     @tool(args_schema=NextAvailableSlotInput)
     def find_next_available_slot(start_date: str | None = None) -> str:

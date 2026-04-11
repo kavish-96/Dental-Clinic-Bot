@@ -34,10 +34,10 @@ Current local date and time is {current_datetime().strftime("%Y-%m-%d %H:%M")}.
 IMPORTANT RULES:
 - The answer should be short and precise to question, dont overflood the information.
 - Never mention knowledge base, data availability, RAG, functions, tools, internal logic, or system behavior.
-- Never expose raw document text or raw tool output.
+- Never expose raw document text for knowledge answers. However, you MUST present all appointment details or lists from tool outputs to the user clearly.
 - If the user mentions whom to contact for booking, appointment, or scheduling in any form (even along with words like contact, call, or reach), prioritize helping them book the appointment directly instead of only giving contact details.
 - If something is missing, ask politely for only the missing detail.
-- If the user asks something unrelated, fallback by giving valid reasoning.
+- If the user asks something unrelated to dentistry or the clinic (e.g., general knowledge, irrelevant medical issues), you MUST strictly refuse to answer and redirect them back to clinic topics. Never provide ANY explanations or facts for unrelated topics.
 - If the answer is unknown, fallback by giving valid reasoning.
 - The user's mobile number is the primary identifier for appointments.
 - Ask for the mobile number only when needed for booking, rescheduling, cancelling, or viewing appointments.
@@ -56,8 +56,8 @@ IMPORTANT RULES:
 - Use ONLY the provided tools to book, cancel, update, view appointments, or retrieve clinic information.
 - Use the exact tool argument names:
   book_appointment(mobile_number, date, time),
-  cancel_appointment(mobile_number),
-  update_appointment(mobile_number, new_date, new_time),
+  cancel_appointment(mobile_number, date, time),
+  update_appointment(mobile_number, old_date, old_time, new_date, new_time),
   view_appointment(mobile_number),
   find_next_available_slot(start_date),
   search_clinic_knowledge(query).
@@ -70,6 +70,7 @@ Valid labels:
 - booking
 - reschedule
 - cancel
+- view
 - clinic_info
 - irrelevant
 - casual
@@ -77,12 +78,12 @@ Valid labels:
 Rules:
 - Use meaning, not keywords only.
 - booking includes wanting to come, visit, schedule, book, or asking for the next slot.
-- booking also includes asking whom to contact, call, reach, or speak to for an appointment or booking help.
 - reschedule includes changing appointment date or time.
 - cancel includes cancelling or removing an appointment.
+- view includes viewing, checking, or confirming an upcoming appointment.
 - clinic_info includes services, doctors, timings, pricing, FAQs, symptoms related to dental care, or treatment information.
 - casual includes greetings, thanks, who are you, or simple chit-chat.
-- irrelevant includes topics unrelated to the clinic.
+- irrelevant includes any general knowledge questions, non-dental medical questions or topics strictly outside dental clinic services.
 
 Reply with only one label."""
 
@@ -295,7 +296,7 @@ CHAT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             r"^\s*(hi|hello|hey|good morning|good afternoon|good evening)\s*[.!]*\s*$",
             re.IGNORECASE,
         ),
-        "Hello. How can I help you today with your appointment or clinic questions?",
+        "Hello. How can I help you today at SmileCare Dental Clinic?",
     ),
     (
         re.compile(
@@ -390,10 +391,6 @@ TOOL_ARG_ALIASES = {
         "mobile": "mobile_number",
         "mobileNumber": "mobile_number",
         "phone": "mobile_number",
-        "date": "new_date",
-        "time": "new_time",
-        "appointment_date": "new_date",
-        "appointment_time": "new_time",
     },
     "view_appointment": {
         "mobile": "mobile_number",
@@ -533,6 +530,7 @@ def _classify_intent(
         "booking",
         "reschedule",
         "cancel",
+        "view",
         "clinic_info",
         "irrelevant",
         "casual",
@@ -588,8 +586,6 @@ def _should_force_knowledge_tool(
 
     if any(keyword in latest_user_message for keyword in APPOINTMENT_KEYWORDS):
         return False
-    if "?" in latest_user_message:
-        return True
 
     if any(keyword in latest_user_message for keyword in KNOWLEDGE_KEYWORDS):
         return True
@@ -747,11 +743,20 @@ def _extract_known_time(messages: List[BaseMessage]) -> str | None:
     return None
 
 
-def _format_existing_appointment(mobile_number: str, appointment) -> str:
-    return (
-        f"You already have an appointment on {appointment.date.isoformat()} at "
-        f"{appointment.time.strftime('%H:%M')} for {mobile_number}. Do you want to book another one?"
-    )
+def _format_existing_appointment(mobile_number: str, appointments: list) -> str:
+    if not appointments:
+        return ""
+    if len(appointments) == 1:
+        app = appointments[0]
+        return (
+            f"You already have an appointment on {app.date.isoformat()} at "
+            f"{app.time.strftime('%H:%M')} for {mobile_number}. Do you want to book another one?"
+        )
+    msg = f"You already have {len(appointments)} upcoming appointments for {mobile_number}:\n"
+    for app in appointments:
+        msg += f"- {app.date.isoformat()} at {app.time.strftime('%H:%M')}\n"
+    msg += "Do you want to book another one?"
+    return msg
 
 
 def _looks_like_another_booking_confirmation(text: str) -> bool:
@@ -786,14 +791,14 @@ def _handle_booking_detail_collection(
     date_text = _extract_known_date(messages)
     time_text = _extract_known_time(messages)
 
-    existing_appointment = crud.get_upcoming_appointment_for_mobile(db, mobile_number)
+    existing_appointments = crud.get_upcoming_appointments_for_mobile(db, mobile_number) if mobile_number else []
     if (
-        existing_appointment is not None
+        existing_appointments
         and not date_text
         and not time_text
         and not _looks_like_another_booking_confirmation(latest_user_message)
     ):
-        appointment_summary = _format_existing_appointment(mobile_number, existing_appointment)
+        appointment_summary = _format_existing_appointment(mobile_number, existing_appointments)
     else:
         appointment_summary = ""
 
@@ -1127,7 +1132,7 @@ def run_agent(messages: List[BaseMessage], db: Session) -> str:
         raise ValueError("GROQ_API_KEY must be set in environment or .env")
 
     llm = ChatGroq(
-        model="llama-3.3-70b-versatile",
+        model="llama-3.1-8b-instant",
         # llama-3.1-8b-instant
         # llama-3.3-70b-versatile
         temperature=0,
@@ -1145,24 +1150,6 @@ def run_agent(messages: List[BaseMessage], db: Session) -> str:
 
     intent = _classify_intent(llm, messages, resolved_user_message)
     if intent == "irrelevant":
-        knowledge_tool = next(
-            (tool for tool in tools if tool.name == "search_clinic_knowledge"), None
-        )
-        if knowledge_tool is not None and resolved_user_message:
-            try:
-                knowledge_result = str(
-                    knowledge_tool.invoke({"query": resolved_user_message})
-                )
-                if _has_meaningful_knowledge_result(knowledge_result):
-                    return _answer_from_clinic_knowledge(
-                        llm,
-                        resolved_user_message,
-                        knowledge_result,
-                        conversation_snippet,
-                    )
-            except Exception:
-                logger.exception("Knowledge lookup during irrelevant-intent handling failed")
-
         try:
             irrelevant_ai: AIMessage = llm.invoke(  # type: ignore[assignment]
                 [

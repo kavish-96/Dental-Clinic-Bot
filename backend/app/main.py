@@ -84,10 +84,11 @@ def update_appointment_for_mobile(
 
     d = _parse_date(body.date) if body.date else None
     t = _parse_time(body.time) if body.time else None
-    current = crud.get_upcoming_appointment_for_mobile(db, mobile_number)
-    if not current:
+    current_apps = crud.get_upcoming_appointments_for_mobile(db, mobile_number)
+    if not current_apps:
         raise HTTPException(status_code=404, detail="No appointment found for this mobile number.")
 
+    current = current_apps[0]
     target_date = d if d is not None else current.date
     target_time = t if t is not None else current.time
     if crud.is_slot_in_past(target_date, target_time):
@@ -95,7 +96,7 @@ def update_appointment_for_mobile(
     if not crud.is_slot_available(db, target_date, target_time, exclude_appointment_id=current.id):
         raise HTTPException(status_code=409, detail="This appointment slot is already booked.")
 
-    apt = crud.update_upcoming_for_mobile(db, mobile_number, date_val=d, time_val=t)
+    apt = crud.update_specific_appointment(db, mobile_number, current.date, current.time, new_date=d, new_time=t)
     if not apt:
         raise HTTPException(status_code=400, detail="Unable to update the appointment.")
     return apt.to_dict()
@@ -104,7 +105,11 @@ def update_appointment_for_mobile(
 @app.delete("/appointments/{mobile_number}")
 def cancel_appointment_for_mobile(mobile_number: str, db: Session = Depends(get_db)):
     """Cancel the appointment for this mobile number."""
-    ok = crud.cancel_upcoming_for_mobile(db, mobile_number)
+    current_apps = crud.get_upcoming_appointments_for_mobile(db, mobile_number)
+    if not current_apps:
+        raise HTTPException(status_code=404, detail="No appointment found for this mobile number.")
+    
+    ok = crud.cancel_specific_appointment(db, mobile_number, current_apps[0].date, current_apps[0].time)
     if not ok:
         raise HTTPException(status_code=404, detail="No appointment found for this mobile number.")
     return {"detail": "Appointment cancelled."}

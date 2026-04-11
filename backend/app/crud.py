@@ -62,25 +62,24 @@ def get_appointments_for_mobile(db: Session, mobile_number: str) -> list[Appoint
     )
 
 
-def get_upcoming_appointment_for_mobile(
-    db: Session, mobile_number: str
-) -> Appointment | None:
-    """Return the appointment for a mobile number, if any.
-
-    For simplicity we assume there is at most one active appointment per
-    mobile number and just return the earliest one if multiple exist.
-    """
-    return (
-        db.query(Appointment)
-        .filter(Appointment.mobile_number == mobile_number)
-        .order_by(Appointment.date, Appointment.time)
-        .first()
-    )
+def get_upcoming_appointments_for_mobile(db: Session, mobile_number: str) -> list[Appointment]:
+    """Return all upcoming appointments for a mobile number."""
+    now = current_datetime().replace(tzinfo=None)
+    apps = get_appointments_for_mobile(db, mobile_number)
+    upcoming_apps = []
+    for app in apps:
+        if _combine_slot(app.date, app.time) > now:
+            upcoming_apps.append(app)
+    return upcoming_apps
 
 
-def cancel_upcoming_for_mobile(db: Session, mobile_number: str) -> bool:
-    """Cancel (delete) the upcoming appointment for this mobile number."""
-    apt = get_upcoming_appointment_for_mobile(db, mobile_number)
+def cancel_specific_appointment(db: Session, mobile_number: str, date_val: date, time_val: time) -> bool:
+    """Cancel (delete) a specific upcoming appointment for this mobile number."""
+    apt = db.query(Appointment).filter(
+        Appointment.mobile_number == mobile_number,
+        Appointment.date == date_val,
+        Appointment.time == time_val
+    ).first()
     if not apt:
         return False
     db.delete(apt)
@@ -88,27 +87,33 @@ def cancel_upcoming_for_mobile(db: Session, mobile_number: str) -> bool:
     return True
 
 
-def update_upcoming_for_mobile(
+def update_specific_appointment(
     db: Session,
     mobile_number: str,
-    date_val: date | None = None,
-    time_val: time | None = None,
+    old_date: date,
+    old_time: time,
+    new_date: date | None = None,
+    new_time: time | None = None,
 ) -> Appointment | None:
-    """Update date and/or time on the upcoming appointment for this mobile number."""
-    apt = get_upcoming_appointment_for_mobile(db, mobile_number)
+    """Update date and/or time on a specific appointment for this mobile number."""
+    apt = db.query(Appointment).filter(
+        Appointment.mobile_number == mobile_number,
+        Appointment.date == old_date,
+        Appointment.time == old_time
+    ).first()
     if not apt:
         return None
 
-    new_date = date_val if date_val is not None else apt.date
-    new_time = time_val if time_val is not None else apt.time
+    target_date = new_date if new_date is not None else apt.date
+    target_time = new_time if new_time is not None else apt.time
 
-    if is_slot_in_past(new_date, new_time):
+    if is_slot_in_past(target_date, target_time):
         return None
-    if not is_slot_available(db, new_date, new_time, exclude_appointment_id=apt.id):
+    if not is_slot_available(db, target_date, target_time, exclude_appointment_id=apt.id):
         return None
 
-    apt.date = new_date
-    apt.time = new_time
+    apt.date = target_date
+    apt.time = target_time
     db.commit()
     db.refresh(apt)
     return apt
