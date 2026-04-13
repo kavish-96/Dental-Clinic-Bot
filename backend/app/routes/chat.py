@@ -7,7 +7,9 @@ from sqlalchemy.orm import Session
 
 from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
 
+import time
 from ..database import get_db
+from ..models import ChatLog
 from ..agent import run_agent
 
 logger = logging.getLogger(__name__)
@@ -46,9 +48,30 @@ def chat(request: ChatRequest, db: Session = Depends(get_db)):
 
     if not lc_messages:
         raise HTTPException(status_code=400, detail="Messages cannot be empty")
-
     try:
+        start_time_ms = time.time() * 1000
         response = run_agent(lc_messages, db)
+        end_time_ms = time.time() * 1000
+        
+        latency_ms_val = round(end_time_ms - start_time_ms, 3)
+        print(f"Latency: {latency_ms_val} ms")
+        
+        question_text = next((m.content for m in reversed(request.messages) if m.role == "user"), "")
+        
+        def truncate_text(text: str, max_words: int = 4) -> str:
+            words = text.split()
+            if len(words) > max_words:
+                return " ".join(words[:max_words]) + "..."
+            return text
+        
+        chat_log = ChatLog(
+            question=truncate_text(question_text),
+            response=truncate_text(response),
+            latency_ms=latency_ms_val
+        )
+        db.add(chat_log)
+        db.commit()
+
         return ChatResponse(response=response)
     except ValueError as e:
         if "GROQ_API_KEY" in str(e):
