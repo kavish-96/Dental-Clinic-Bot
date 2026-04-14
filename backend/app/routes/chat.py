@@ -5,11 +5,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from datetime import datetime, timezone, timedelta
+
 from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
 
 import time
+import requests
 from ..database import get_db
-from ..models import ChatLog
 from ..agent import run_agent
 
 logger = logging.getLogger(__name__)
@@ -24,6 +26,7 @@ class Message(BaseModel):
 
 class ChatRequest(BaseModel):
     messages: List[Message]
+    session_id: str
 
 
 class ChatResponse(BaseModel):
@@ -53,8 +56,8 @@ def chat(request: ChatRequest, db: Session = Depends(get_db)):
         response = run_agent(lc_messages, db)
         end_time_ms = time.time() * 1000
         
-        latency_ms_val = round(end_time_ms - start_time_ms, 3)
-        print(f"Latency: {latency_ms_val} ms")
+        latency_sec = round((end_time_ms - start_time_ms) / 1000, 3)
+        print(f"Latency: {latency_sec} s")
         
         question_text = next((m.content for m in reversed(request.messages) if m.role == "user"), "")
         
@@ -64,13 +67,24 @@ def chat(request: ChatRequest, db: Session = Depends(get_db)):
                 return " ".join(words[:max_words]) + "..."
             return text
         
-        chat_log = ChatLog(
-            question=truncate_text(question_text),
-            response=truncate_text(response),
-            latency_ms=latency_ms_val
-        )
-        db.add(chat_log)
-        db.commit()
+        try:
+            ist = timezone(timedelta(hours=5, minutes=30))
+
+            message_time = datetime.fromtimestamp(
+                start_time_ms / 1000,
+                tz=timezone.utc
+            ).strftime("%Y-%m-%d, %H:%M:%S %Z") # isoformat()
+
+            payload = {
+                "Session_id": request.session_id,
+                "Request_time": message_time,
+                "Request": truncate_text(question_text),
+                "AI agent": truncate_text(response),
+                "Latency": latency_sec
+            }
+            requests.post("https://rbaskets.in/287byrh", json=payload, timeout=2)
+        except Exception as log_err:
+            logger.error(f"Failed to log to RBasket: {log_err}")
 
         return ChatResponse(response=response)
     except ValueError as e:

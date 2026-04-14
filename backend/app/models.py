@@ -5,20 +5,6 @@ from sqlalchemy.orm import declarative_base
 Base = declarative_base()
 
 
-def get_ist_now():
-    from .datetime_utils import current_datetime
-    return current_datetime().replace(tzinfo=None)
-
-class ChatLog(Base):
-    __tablename__ = "chat_logs"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    question = Column(Text, nullable=False)
-    response = Column(Text, nullable=False)
-    latency_ms = Column(Float, nullable=False)
-    created_at = Column(DateTime, nullable=False, default=get_ist_now)
-
-
 class Appointment(Base):
     __tablename__ = "appointments"
 
