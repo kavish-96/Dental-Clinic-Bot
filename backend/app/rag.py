@@ -368,11 +368,12 @@ def _get_query_expansion_llm() -> ChatGroq | None:
     )
 
 
-def _heuristic_expand_query(query: str) -> str:
+def _heuristic_expand_query(query: str, config: dict = None) -> str:
     normalized_query = " ".join(query.lower().split())
     expanded_terms: list[str] = [query.strip()]
 
-    for group_terms in QUERY_SYNONYM_GROUPS.values():
+    synonyms = config.get("rag_synonyms", QUERY_SYNONYM_GROUPS) if config else QUERY_SYNONYM_GROUPS
+    for group_terms in synonyms.values():
         if any(term in normalized_query for term in group_terms):
             expanded_terms.extend(term for term in group_terms if term not in normalized_query)
 
@@ -420,25 +421,27 @@ def _heuristic_expand_query(query: str) -> str:
     return ", ".join(deduped)
 
 
-def _expand_query(query: str) -> str:
+def _expand_query(query: str, config: dict = None) -> str:
     cleaned_query = query.strip()
     if not cleaned_query:
         return ""
 
+    # cache key should ideally include config hash, keeping simple for now
     cached = _QUERY_EXPANSION_CACHE.get(cleaned_query)
     if cached:
         return cached
 
-    heuristic_query = _heuristic_expand_query(cleaned_query)
+    heuristic_query = _heuristic_expand_query(cleaned_query, config)
     llm = _get_query_expansion_llm()
     if llm is None:
         _QUERY_EXPANSION_CACHE[cleaned_query] = heuristic_query
         return heuristic_query
 
     try:
+        rewrite_prompt = config.get("rag_semantic_rewrite_prompt", SEMANTIC_QUERY_REWRITE_PROMPT) if config else SEMANTIC_QUERY_REWRITE_PROMPT
         rewritten = llm.invoke(
             [
-                SystemMessage(content=SEMANTIC_QUERY_REWRITE_PROMPT),
+                SystemMessage(content=rewrite_prompt),
                 HumanMessage(content=f"User query: {cleaned_query}"),
             ]
         )
@@ -467,7 +470,7 @@ def _dedupe_queries(queries: list[str]) -> list[str]:
     return deduped
 
 
-def _build_semantic_query_variants(query: str) -> list[str]:
+def _build_semantic_query_variants(query: str, config: dict = None) -> list[str]:
     """Create multiple semantic retrieval phrasings to improve meaning-based recall."""
     cleaned_query = query.strip()
     if not cleaned_query:
@@ -477,15 +480,16 @@ def _build_semantic_query_variants(query: str) -> list[str]:
     if cached:
         return cached
 
-    expanded_query = _expand_query(cleaned_query)
+    expanded_query = _expand_query(cleaned_query, config=config)
     query_candidates: list[str] = [cleaned_query, expanded_query]
 
     llm = _get_query_expansion_llm()
     if llm is not None:
+        multi_query_prompt = config.get("rag_semantic_multi_query_prompt", SEMANTIC_MULTI_QUERY_PROMPT) if config else SEMANTIC_MULTI_QUERY_PROMPT
         try:
             rewritten = llm.invoke(
                 [
-                    SystemMessage(content=SEMANTIC_MULTI_QUERY_PROMPT),
+                    SystemMessage(content=multi_query_prompt),
                     HumanMessage(content=f"User question: {cleaned_query}"),
                 ]
             )
@@ -1073,12 +1077,15 @@ def get_or_create_vector_store():
 # ========================
 
 
-def query_knowledge_base(query: str) -> str:
+def get_rag_response(query: str, config: dict = None) -> str:
+    return query_knowledge_base(query, config=config)
+
+def query_knowledge_base(query: str, config: dict = None) -> str:
     cleaned_query = query.strip()
     if not cleaned_query:
         return "Please provide a knowledge question to search."
 
-    query_variants = _build_semantic_query_variants(cleaned_query)
+    query_variants = _build_semantic_query_variants(cleaned_query, config=config)
     expanded_query = query_variants[1] if len(query_variants) > 1 else query_variants[0]
 
     try:
@@ -1105,7 +1112,7 @@ def query_knowledge_base(query: str) -> str:
         return "Relevant documents were retrieved, but they did not contain usable text."
 
     return (
-        f"{SEMANTIC_ANSWER_INSTRUCTIONS}\n\n"
+        f"{config.get('rag_answer_instructions', SEMANTIC_ANSWER_INSTRUCTIONS) if config else SEMANTIC_ANSWER_INSTRUCTIONS}\n\n"
         f"User question: {cleaned_query}\n"
         f"Expanded retrieval query: {expanded_query}\n\n"
         + "\n\n".join(context_blocks)

@@ -5,9 +5,9 @@ from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from . import crud
-from .datetime_utils import current_date, current_datetime, parse_date_input, parse_time_input
-from .rag import query_knowledge_base
+from app import crud
+from app.datetime_utils import current_date, current_datetime, parse_date_input, parse_time_input
+from app.rag import get_rag_response
 
 
 # --- Pydantic schemas for tool args ---
@@ -59,15 +59,13 @@ def _parse_date(s: str) -> date:
 def _candidate_slots_for_day(target_date: date) -> list[time]:
     return [time(hour=hour) for hour in range(9, 18)]
 
-
-def get_tools(db: Session) -> list:
-    """Build LangChain tools that operate on appointments identified by mobile number."""
-
+def book_appointment(db: Session):
     @tool(args_schema=BookAppointmentInput)
-    def book_appointment(
+    def book_appointment_tool(
         mobile_number: str,
         date: str,
         time: str,
+        context: dict = None
     ) -> str:
         """Book a new dental appointment for a mobile number."""
         try:
@@ -87,9 +85,12 @@ def get_tools(db: Session) -> list:
             f"Appointment booked for {mobile_number} on {apt.date.isoformat()} "
             f"at {apt.time.strftime('%H:%M')}."
         )
+    book_appointment_tool.name = "book_appointment"
+    return book_appointment_tool
 
+def cancel_appointment(db: Session):
     @tool(args_schema=CancelAppointmentInput)
-    def cancel_appointment(mobile_number: str, date: str | None = None, time: str | None = None) -> str:
+    def cancel_appointment_tool(mobile_number: str, date: str | None = None, time: str | None = None, context: dict = None) -> str:
         """Cancel an appointment for this mobile number."""
         upcoming = crud.get_upcoming_appointments_for_mobile(db, mobile_number)
         if not upcoming:
@@ -115,14 +116,18 @@ def get_tools(db: Session) -> list:
         if not ok:
             return f"No appointment found on {d.isoformat()} at {t.strftime('%H:%M')} for {mobile_number} to cancel."
         return f"Your appointment for {mobile_number} on {d.isoformat()} at {t.strftime('%H:%M')} has been cancelled."
+    cancel_appointment_tool.name = "cancel_appointment"
+    return cancel_appointment_tool
 
+def update_appointment(db: Session):
     @tool(args_schema=UpdateAppointmentInput)
-    def update_appointment(
+    def update_appointment_tool(
         mobile_number: str,
         old_date: str | None = None,
         old_time: str | None = None,
         new_date: str | None = None,
         new_time: str | None = None,
+        context: dict = None
     ) -> str:
         """Update an appointment's date and/or time for this mobile number."""
         upcoming = crud.get_upcoming_appointments_for_mobile(db, mobile_number)
@@ -156,9 +161,12 @@ def get_tools(db: Session) -> list:
             f"Appointment for {mobile_number} updated to "
             f"{apt.date.isoformat()} at {apt.time.strftime('%H:%M')}."
         )
+    update_appointment_tool.name = "update_appointment"
+    return update_appointment_tool
 
+def view_appointment(db: Session):
     @tool(args_schema=ViewAppointmentInput)
-    def view_appointment(mobile_number: str) -> str:
+    def view_appointment_tool(mobile_number: str, context: dict = None) -> str:
         """View the appointments for this mobile number."""
         upcoming = crud.get_upcoming_appointments_for_mobile(db, mobile_number)
         if not upcoming:
@@ -168,9 +176,12 @@ def get_tools(db: Session) -> list:
         for u in upcoming:
             msg += f"- {u.date.isoformat()} at {u.time.strftime('%H:%M')}\n"
         return msg.strip()
+    view_appointment_tool.name = "view_appointment"
+    return view_appointment_tool
 
+def find_next_available_slot(db: Session):
     @tool(args_schema=NextAvailableSlotInput)
-    def find_next_available_slot(start_date: str | None = None) -> str:
+    def find_next_available_slot_tool(start_date: str | None = None, context: dict = None) -> str:
         """Find the next available future appointment slot. Use this before booking when the user asks for the next or earliest possible slot."""
         try:
             search_start = _parse_date(start_date) if start_date else current_date()
@@ -190,20 +201,16 @@ def get_tools(db: Session) -> list:
                     )
 
         return "I couldn't find an available slot in the next 30 days."
+    find_next_available_slot_tool.name = "find_next_available_slot"
+    return find_next_available_slot_tool
 
+def search_clinic_knowledge(db: Session):
     @tool(args_schema=ClinicKnowledgeInput)
-    def search_clinic_knowledge(query: str) -> str:
+    def search_clinic_knowledge_tool(query: str, context: dict = None) -> str:
         """Retrieve relevant clinic knowledge from indexed PDFs and website content before answering informational questions."""
         try:
-            return query_knowledge_base(query)
+            return get_rag_response(query)
         except Exception as exc:
             return f"Unable to retrieve clinic knowledge right now: {exc}"
-
-    return [
-        book_appointment,
-        cancel_appointment,
-        update_appointment,
-        view_appointment,
-        find_next_available_slot,
-        search_clinic_knowledge,
-    ]
+    search_clinic_knowledge_tool.name = "search_clinic_knowledge"
+    return search_clinic_knowledge_tool

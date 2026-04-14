@@ -12,7 +12,8 @@ from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
 import time
 import requests
 from ..database import get_db
-from ..agent import run_agent
+# from ..agent import run_agent
+from ..agent_entry import run_agent
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,7 @@ def chat(request: ChatRequest, db: Session = Depends(get_db)):
                 "AI agent": truncate_text(response),
                 "Latency": latency_sec
             }
-            requests.post("https://rbaskets.in/287byrh", json=payload, timeout=2)
+            requests.post("https://rbaskets.in/dental", json=payload, timeout=2)
         except Exception as log_err:
             logger.error(f"Failed to log to RBasket: {log_err}")
 
