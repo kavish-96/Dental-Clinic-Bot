@@ -17,7 +17,7 @@ DEFAULT_TOOLS = [
     "update_appointment",
     "view_appointment",
     "find_next_available_slot",
-    "search_clinic_knowledge"
+    "_clinic_knowledge"
 ]
 
 from app.agent.config import AGENT_CONFIG
@@ -30,7 +30,10 @@ def run_agent(messages: List[BaseMessage], db: Session) -> str:
         raise ValueError("GROQ_API_KEY must be set in environment or .env")
 
     llm = ChatGroq(
-        model="llama-3.1-8b-instant",
+        model="openai/gpt-oss-120b",
+        # llama-3.1-8b-instant
+        # llama-3.3-70b-versatile
+        # openai/gpt-oss-120b
         temperature=0,
         api_key=settings.GROQ_API_KEY,
     )

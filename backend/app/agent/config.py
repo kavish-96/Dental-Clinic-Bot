@@ -1,4 +1,5 @@
 from app.domain.dental import config as dental_config
+from app.domain.dental.rag_config import RAG_CONFIG as DENTAL_RAG_CONFIG
 
 AGENT_CONFIG = {
     "agent_id": "dental_bot",
@@ -11,5 +12,6 @@ AGENT_CONFIG = {
         "search_clinic_knowledge"
     ],
     "intent_labels": dental_config.INTENT_LABELS,
-    "prompts": dental_config
+    "prompts": dental_config,
+    "rag": DENTAL_RAG_CONFIG,
 }

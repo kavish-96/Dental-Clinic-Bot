@@ -143,6 +143,13 @@ class DentalService:
             except Exception:
                 logger.exception("Irrelevant-intent reply generation failed")
             return "Sorry, I can help with appointments or clinic info."
+
+        if intent in ("knowledge", "clinic_info"):
+            return {
+                "action": "call_tool",
+                "tool_name": "search_clinic_knowledge",
+                "args": {"query": resolved_user_message or self._latest_user_message(messages)},
+            }
             
         if intent == "booking":
             booking_detail_reply = self.handle_booking_flow(

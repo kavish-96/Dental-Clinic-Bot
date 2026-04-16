@@ -26,15 +26,15 @@ CHUNK_SIZE = 800
 CHUNK_OVERLAP = 120
 
 # Wider candidate pool improves recall, while post-filtering keeps context diverse.
-TOP_K = 5
-FETCH_K = 14
+TOP_K = 3
+FETCH_K = 10
 MMR_LAMBDA = 0.55
 MAX_SEMANTIC_QUERIES = 4
 SIMILARITY_K = 8
 
 # Keep context clean and bounded before passing it to the answer model.
-MAX_CONTEXT_CHARS_PER_CHUNK = 1400
-MAX_TOTAL_CONTEXT_CHARS = 6000
+MAX_CONTEXT_CHARS_PER_CHUNK = 700
+MAX_TOTAL_CONTEXT_CHARS = 2500
 MIN_CONTENT_OVERLAP_RATIO = 0.7
 EXACT_PHRASE_BOOST = 0.35
 TOKEN_OVERLAP_BOOST = 0.25
@@ -46,152 +46,9 @@ ALTERNATE_EMBEDDING_MODEL = "intfloat/e5-large-v2"
 BGE_QUERY_INSTRUCTION = "Represent this sentence for searching relevant passages:"
 
 
-SEMANTIC_QUERY_REWRITE_PROMPT = """Rewrite the user's dental-clinic search query into a concise semantic retrieval query.
-
-Requirements:
-- Expand with close synonyms, related dental or medical terms, and alternate phrasings.
-- Keep the output to 1 or 2 short lines maximum.
-- Preserve the user's intent exactly.
-- Output only the rewritten retrieval query with no bullets, labels, or explanation.
-
-Example:
-User query: tooth pain fix
-Expanded retrieval query: tooth pain treatment, dental pain relief, cavity treatment, root canal therapy
-"""
-
-
-SEMANTIC_ANSWER_INSTRUCTIONS = """Use the clinic knowledge below to answer the user's question accurately.
-Use semantic understanding. Even if the user query uses different wording than the context, match based on meaning and provide the best possible answer.
-Infer answers from related concepts when the wording differs.
-Do not say the answer is not found if relevant information exists in related wording.
-If the answer is only partially covered, answer with the best supported details and clearly mention the limitation."""
-
-
-SEMANTIC_MULTI_QUERY_PROMPT = """Generate a few concise semantic retrieval variants for the user's dental-clinic question.
-
-Requirements:
-- Preserve the exact intent.
-- Use different natural phrasings that improve semantic recall.
-- Include role, specialty, treatment, and concept-level paraphrases when relevant.
-- Do not add explanation, bullets, numbering, or labels.
-- Return 2 to 4 short lines only, one query variant per line.
-
-Example:
-User question: who is the implantologist
-implant specialist doctor
-dental implant specialist
-doctor for implant treatment
-"""
-
-
-QUERY_SYNONYM_GROUPS: dict[str, tuple[str, ...]] = {
-    "price": (
-        "price",
-        "prices",
-        "pricing",
-        "cost",
-        "costs",
-        "costing",
-        "charge",
-        "charges",
-        "fee",
-        "fees",
-        "rate",
-        "rates",
-        "price list",
-        "price sheet",
-        "quotation",
-        "estimate",
-    ),
-    "services": (
-        "service",
-        "services",
-        "treatment",
-        "treatments",
-        "procedure",
-        "procedures",
-        "offered",
-        "available",
-    ),
-    "doctor": (
-        "doctor",
-        "doctors",
-        "dentist",
-        "dentists",
-        "specialist",
-        "specialists",
-        "expert",
-        "experts",
-    ),
-    "consultation": (
-        "consultation",
-        "consult",
-        "visit",
-        "checkup",
-        "diagnosis",
-        "initial diagnosis",
-    ),
-    "cleaning": (
-        "cleaning",
-        "scaling",
-        "polishing",
-        "oral prophylaxis",
-        "dental cleaning",
-    ),
-    "filling": (
-        "filling",
-        "fillings",
-        "tooth filling",
-        "cavity filling",
-        "restoration",
-        "composite filling",
-    ),
-    "root_canal": (
-        "root canal",
-        "root canal treatment",
-        "rct",
-        "endodontic treatment",
-        "endodontics",
-        "pulp treatment",
-    ),
-    "extraction": (
-        "extraction",
-        "extractions",
-        "tooth removal",
-        "removal",
-        "exodontia",
-    ),
-    "whitening": (
-        "whitening",
-        "bleaching",
-        "teeth whitening",
-        "tooth whitening",
-    ),
-    "implant": (
-        "implant",
-        "implants",
-        "dental implant",
-        "implantology",
-        "implant treatment",
-        "implantologist",
-        "implant specialist",
-        "implant dentist",
-    ),
-    "braces": (
-        "braces",
-        "orthodontics",
-        "orthodontic treatment",
-        "aligners",
-        "teeth straightening",
-        "orthodontist",
-        "brace treatment",
-    ),
-}
-
-
 _EMBEDDINGS_CACHE: dict[tuple[str, bool], Any] = {}
-_QUERY_EXPANSION_CACHE: dict[str, str] = {}
-_QUERY_VARIANTS_CACHE: dict[str, list[str]] = {}
+_QUERY_EXPANSION_CACHE: dict[tuple[str, str], str] = {}
+_QUERY_VARIANTS_CACHE: dict[tuple[str, str], list[str]] = {}
 
 MULTISPACE_PATTERN = re.compile(r"[ \t]+")
 MULTINEWLINE_PATTERN = re.compile(r"\n{3,}")
@@ -201,6 +58,41 @@ TOKEN_PATTERN = re.compile(r"\b[a-z0-9]{3,}\b")
 
 class RagConfigurationError(RuntimeError):
     """Raised when the RAG stack is unavailable or misconfigured."""
+
+
+REQUIRED_RAG_CONFIG_KEYS = (
+    "agent_id",
+    "rag_synonyms",
+    "rag_focus_keywords",
+    "rag_semantic_rewrite_prompt",
+    "rag_semantic_multi_query_prompt",
+    "rag_answer_instructions",
+)
+
+
+def _validate_rag_config(config: dict) -> None:
+    if not isinstance(config, dict):
+        raise RagConfigurationError("RAG config is required.")
+
+    missing_keys = [key for key in REQUIRED_RAG_CONFIG_KEYS if key not in config]
+    if missing_keys:
+        raise RagConfigurationError(
+            f"RAG config is missing required key(s): {', '.join(missing_keys)}."
+        )
+
+    if not isinstance(config["rag_synonyms"], dict):
+        raise RagConfigurationError("RAG config key 'rag_synonyms' must be a dictionary.")
+
+    if not str(config["agent_id"]).strip():
+        raise RagConfigurationError("RAG config key 'agent_id' is required.")
+
+    if not isinstance(config["rag_focus_keywords"], list):
+        raise RagConfigurationError("RAG config key 'rag_focus_keywords' must be a list.")
+
+
+def _rag_config_cache_key(config: dict) -> str:
+    relevant_config = {key: config[key] for key in REQUIRED_RAG_CONFIG_KEYS}
+    return json.dumps(relevant_config, sort_keys=True, default=list)
 
 
 # ========================
@@ -217,16 +109,22 @@ def _resolve_backend_path(path_str: str) -> Path:
     return path if path.is_absolute() else (_backend_root() / path).resolve()
 
 
-def get_pdf_directory() -> Path:
-    return _resolve_backend_path(settings.RAG_PDF_DIR)
+def _agent_scoped_backend_path(base_path_str: str, config: dict) -> Path:
+    base_path = _resolve_backend_path(base_path_str)
+    return base_path / str(config["agent_id"]).strip()
 
 
-def get_crawl_output_path() -> Path:
-    return _resolve_backend_path(settings.RAG_CRAWL_OUTPUT_PATH)
+def get_pdf_directory(config: dict) -> Path:
+    return _agent_scoped_backend_path(settings.RAG_PDF_DIR, config)
 
 
-def get_faiss_index_path() -> Path:
-    return _resolve_backend_path(settings.RAG_FAISS_INDEX_DIR)
+def get_crawl_output_path(config: dict) -> Path:
+    base_path = _resolve_backend_path(settings.RAG_CRAWL_OUTPUT_PATH)
+    return base_path / f"{str(config['agent_id']).strip()}.json"
+
+
+def get_faiss_index_path(config: dict) -> Path:
+    return _agent_scoped_backend_path(settings.RAG_FAISS_INDEX_DIR, config)
 
 
 # ========================
@@ -249,7 +147,7 @@ def _normalize_text(text: str) -> str:
         if "\t" in line or len(INLINE_TABLE_SEPARATOR_PATTERN.findall(line)) >= 2:
             line = INLINE_TABLE_SEPARATOR_PATTERN.sub(" | ", line)
 
-        # Join accidental single-character splits often produced by PDFs.
+        # Join unintended single-character splits often produced by PDFs.
         line = re.sub(r"(?<=\b\w) (?=\w\b)", "", line)
         line = MULTISPACE_PATTERN.sub(" ", line).strip(" |")
         normalized_lines.append(line)
@@ -259,40 +157,47 @@ def _normalize_text(text: str) -> str:
     return normalized.strip()
 
 
-def _build_pdf_semantic_variants(text: str) -> str:
-    """Augment PDF table text with semantic aliases to improve retrieval."""
+def _synonym_variants_for_text(text: str, config: dict | None = None) -> list[str]:
+    if not config:
+        return []
+
+    lower = text.lower()
+    variants: list[str] = []
+    seen: set[str] = set()
+
+    for group_terms in config["rag_synonyms"].values():
+        terms = [str(term).strip() for term in group_terms if str(term).strip()]
+        if not terms:
+            continue
+
+        normalized_terms = [_normalize_text(term).lower() for term in terms]
+        if not any(term and term in lower for term in normalized_terms):
+            continue
+
+        variant = " ".join(terms)
+        key = variant.lower()
+        if key in seen:
+            continue
+
+        seen.add(key)
+        variants.append(variant)
+
+    return variants
+
+
+def _build_pdf_semantic_variants(text: str, config: dict | None = None) -> str:
+    """Augment PDF text with configured semantic aliases to improve retrieval."""
     normalized = _normalize_text(text)
     if not normalized:
         return ""
 
-    lower = normalized.lower()
     variants: list[str] = [normalized]
-
-    if "price" in lower or "inr" in lower or "₹" in lower:
-        variants.append("pricing cost charges fees rates amount rupees inr treatment price list")
-    if "consultation" in lower:
-        variants.append("consult visit checkup diagnosis")
-    if "doctor" in lower or "dentist" in lower or "specialist" in lower:
-        variants.append("doctor dentist specialist experts specialist available")
-    if "scaling" in lower or "cleaning" in lower:
-        variants.append("scaling cleaning polishing oral prophylaxis")
-    if "filling" in lower or "cavity" in lower:
-        variants.append("tooth filling cavity filling restoration composite filling")
-    if "root canal" in lower:
-        variants.append("root canal rct endodontic treatment pulp therapy")
-    if "extraction" in lower or "removal" in lower:
-        variants.append("extraction tooth removal exodontia")
-    if "whitening" in lower or "bleaching" in lower:
-        variants.append("teeth whitening bleaching")
-    if "implant" in lower:
-        variants.append("dental implant implantology implantologist implant specialist implant dentist")
-    if "braces" in lower or "aligners" in lower:
-        variants.append("braces orthodontics aligners teeth straightening orthodontist brace treatment")
+    variants.extend(_synonym_variants_for_text(normalized, config=config))
 
     return "\n".join(variants)
 
 
-def _extract_website_focus_text(text: str) -> str:
+def _extract_website_focus_text(text: str, config: dict | None = None) -> str:
     """Keep the most answerable sections from crawled pages and trim navigation noise."""
     normalized = _normalize_text(text)
     if not normalized:
@@ -304,18 +209,10 @@ def _extract_website_focus_text(text: str) -> str:
 
     focus_lines: list[str] = []
     capture = False
+    focus_keywords = [str(keyword).lower() for keyword in config["rag_focus_keywords"]] if config else []
     for line in lines:
         lowered = line.lower()
-        if any(
-            marker in lowered
-            for marker in (
-                "frequently asked questions",
-                "faq",
-                "documents & charges",
-                "interest rates",
-                "home buyers guide",
-            )
-        ):
+        if any(keyword in lowered for keyword in focus_keywords):
             capture = True
 
         if capture:
@@ -329,25 +226,21 @@ def _extract_website_focus_text(text: str) -> str:
     return "\n".join(lines[:250]).strip()
 
 
-def _build_website_semantic_variants(text: str, source: str) -> str:
+def _build_website_semantic_variants(text: str, source: str, config: dict | None = None) -> str:
     """Augment crawled website content with concise semantic hints without changing architecture."""
-    focused = _extract_website_focus_text(text)
+    focused = _extract_website_focus_text(text, config=config)
     if not focused:
         return ""
 
     lower = focused.lower()
     variants: list[str] = [focused]
+    focus_keywords = [str(keyword).strip() for keyword in config["rag_focus_keywords"]] if config else []
 
-    if "faq" in lower or "frequently asked questions" in lower:
-        variants.append("faq questions answers help support common queries")
-    if "document" in lower or "documents" in lower:
-        variants.append("documents required checklist paperwork forms proofs")
-    if "charge" in lower or "charges" in lower or "fee" in lower:
-        variants.append("fees charges pricing cost amount")
-    if "interest rate" in lower:
-        variants.append("interest rate rates loan rate pricing")
+    if any(keyword.lower() in lower for keyword in focus_keywords):
+        variants.append(" ".join(focus_keywords))
     if source:
         variants.append(_normalize_text(source))
+    variants.extend(_synonym_variants_for_text(focused, config=config))
 
     return "\n".join(variants)
 
@@ -362,52 +255,24 @@ def _get_query_expansion_llm() -> ChatGroq | None:
         return None
 
     return ChatGroq(
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
+        # llama-3.1-8b-instant
+        # llama-3.3-70b-versatile
+        # openai/gpt-oss-120b
         temperature=0,
         api_key=settings.GROQ_API_KEY,
     )
 
 
-def _heuristic_expand_query(query: str, config: dict = None) -> str:
+def _heuristic_expand_query(query: str, config: dict) -> str:
     normalized_query = " ".join(query.lower().split())
     expanded_terms: list[str] = [query.strip()]
 
-    synonyms = config.get("rag_synonyms", QUERY_SYNONYM_GROUPS) if config else QUERY_SYNONYM_GROUPS
+    synonyms = config["rag_synonyms"]
     for group_terms in synonyms.values():
-        if any(term in normalized_query for term in group_terms):
-            expanded_terms.extend(term for term in group_terms if term not in normalized_query)
-
-    # Price questions often need help matching table headings and currency markers.
-    if any(term in normalized_query for term in QUERY_SYNONYM_GROUPS["price"]):
-        expanded_terms.extend(
-            term
-            for term in ("list", "details", "amount", "inr", "rupees", "tariff")
-            if term not in normalized_query
-        )
-
-    # Handle common conversational or Hinglish-style dental intent phrasing.
-    if any(term in normalized_query for term in ("daant", "dant", "tooth", "teeth")):
-        expanded_terms.extend(
-            term for term in ("dental", "tooth", "teeth") if term not in normalized_query
-        )
-    if "braces" in normalized_query or "aligner" in normalized_query:
-        expanded_terms.extend(
-            term
-            for term in ("orthodontics", "orthodontist", "teeth straightening")
-            if term not in normalized_query
-        )
-    if "implant" in normalized_query:
-        expanded_terms.extend(
-            term
-            for term in ("implantologist", "implant specialist", "implant dentist")
-            if term not in normalized_query
-        )
-    if any(term in normalized_query for term in ("doctor", "dentist", "specialist")):
-        expanded_terms.extend(
-            term
-            for term in ("doctor available", "specialist available", "expert")
-            if term not in normalized_query
-        )
+        terms = [str(term).strip() for term in group_terms if str(term).strip()]
+        if any(term.lower() in normalized_query for term in terms):
+            expanded_terms.extend(term for term in terms if term.lower() not in normalized_query)
 
     deduped: list[str] = []
     seen: set[str] = set()
@@ -421,24 +286,24 @@ def _heuristic_expand_query(query: str, config: dict = None) -> str:
     return ", ".join(deduped)
 
 
-def _expand_query(query: str, config: dict = None) -> str:
+def _expand_query(query: str, config: dict) -> str:
     cleaned_query = query.strip()
     if not cleaned_query:
         return ""
 
-    # cache key should ideally include config hash, keeping simple for now
-    cached = _QUERY_EXPANSION_CACHE.get(cleaned_query)
+    cache_key = (cleaned_query, _rag_config_cache_key(config))
+    cached = _QUERY_EXPANSION_CACHE.get(cache_key)
     if cached:
         return cached
 
     heuristic_query = _heuristic_expand_query(cleaned_query, config)
     llm = _get_query_expansion_llm()
     if llm is None:
-        _QUERY_EXPANSION_CACHE[cleaned_query] = heuristic_query
+        _QUERY_EXPANSION_CACHE[cache_key] = heuristic_query
         return heuristic_query
 
     try:
-        rewrite_prompt = config.get("rag_semantic_rewrite_prompt", SEMANTIC_QUERY_REWRITE_PROMPT) if config else SEMANTIC_QUERY_REWRITE_PROMPT
+        rewrite_prompt = config["rag_semantic_rewrite_prompt"]
         rewritten = llm.invoke(
             [
                 SystemMessage(content=rewrite_prompt),
@@ -451,7 +316,7 @@ def _expand_query(query: str, config: dict = None) -> str:
         logger.warning("Semantic query expansion failed; using heuristic expansion: %s", exc)
         expanded_query = heuristic_query
 
-    _QUERY_EXPANSION_CACHE[cleaned_query] = expanded_query
+    _QUERY_EXPANSION_CACHE[cache_key] = expanded_query
     return expanded_query
 
 
@@ -470,13 +335,14 @@ def _dedupe_queries(queries: list[str]) -> list[str]:
     return deduped
 
 
-def _build_semantic_query_variants(query: str, config: dict = None) -> list[str]:
+def _build_semantic_query_variants(query: str, config: dict) -> list[str]:
     """Create multiple semantic retrieval phrasings to improve meaning-based recall."""
     cleaned_query = query.strip()
     if not cleaned_query:
         return []
 
-    cached = _QUERY_VARIANTS_CACHE.get(cleaned_query)
+    cache_key = (cleaned_query, _rag_config_cache_key(config))
+    cached = _QUERY_VARIANTS_CACHE.get(cache_key)
     if cached:
         return cached
 
@@ -485,7 +351,7 @@ def _build_semantic_query_variants(query: str, config: dict = None) -> list[str]
 
     llm = _get_query_expansion_llm()
     if llm is not None:
-        multi_query_prompt = config.get("rag_semantic_multi_query_prompt", SEMANTIC_MULTI_QUERY_PROMPT) if config else SEMANTIC_MULTI_QUERY_PROMPT
+        multi_query_prompt = config["rag_semantic_multi_query_prompt"]
         try:
             rewritten = llm.invoke(
                 [
@@ -503,7 +369,7 @@ def _build_semantic_query_variants(query: str, config: dict = None) -> list[str]
             logger.warning("Semantic multi-query generation failed; using base variants: %s", exc)
 
     variants = _dedupe_queries(query_candidates)[:MAX_SEMANTIC_QUERIES]
-    _QUERY_VARIANTS_CACHE[cleaned_query] = variants
+    _QUERY_VARIANTS_CACHE[cache_key] = variants
     return variants
 
 
@@ -802,8 +668,8 @@ def _get_embeddings(*, local_files_only: bool = False):
 # ========================
 
 
-def load_pdf_documents(pdf_dir: Path | None = None) -> list[Document]:
-    target_dir = pdf_dir or get_pdf_directory()
+def load_pdf_documents(pdf_dir: Path | None = None, config: dict | None = None) -> list[Document]:
+    target_dir = pdf_dir or get_pdf_directory(config)
     if not target_dir.exists():
         return []
 
@@ -838,7 +704,7 @@ def load_pdf_documents(pdf_dir: Path | None = None) -> list[Document]:
                 continue
 
         for doc in loaded:
-            normalized_content = _build_pdf_semantic_variants(doc.page_content)
+            normalized_content = _build_pdf_semantic_variants(doc.page_content, config=config)
             if not normalized_content:
                 continue
 
@@ -858,9 +724,10 @@ def load_pdf_documents(pdf_dir: Path | None = None) -> list[Document]:
 def load_crawl_documents(
     crawl_results: list[dict[str, Any]] | None = None,
     crawl_output_path: Path | None = None,
+    config: dict | None = None,
 ) -> list[Document]:
     if crawl_results is None:
-        source_path = crawl_output_path or get_crawl_output_path()
+        source_path = crawl_output_path or get_crawl_output_path(config)
         if not source_path.exists():
             return []
         try:
@@ -875,7 +742,7 @@ def load_crawl_documents(
 
         content = str(item.get("content", "")).strip()
         url = str(item.get("url", "")).strip()
-        normalized_content = _build_website_semantic_variants(content, url)
+        normalized_content = _build_website_semantic_variants(content, url, config=config)
         if not normalized_content:
             continue
 
@@ -895,8 +762,9 @@ def load_crawl_documents(
 def save_crawl_results(
     crawl_results: list[dict[str, str]],
     output_path: Path | None = None,
+    config: dict | None = None,
 ) -> Path:
-    target_path = output_path or get_crawl_output_path()
+    target_path = output_path or get_crawl_output_path(config)
     target_path.parent.mkdir(parents=True, exist_ok=True)
     target_path.write_text(json.dumps(crawl_results, indent=2, ensure_ascii=False), encoding="utf-8")
     return target_path
@@ -929,9 +797,10 @@ async def crawl_websites(urls: list[str]) -> list[dict[str, str]]:
 def crawl_and_save_websites(
     urls: list[str],
     output_path: Path | None = None,
+    config: dict | None = None,
 ) -> Path:
     crawl_results = asyncio.run(crawl_websites(urls))
-    return save_crawl_results(crawl_results, output_path=output_path)
+    return save_crawl_results(crawl_results, output_path=output_path, config=config)
 
 
 # ========================
@@ -963,11 +832,13 @@ def load_source_documents(
     pdf_dir: Path | None = None,
     crawl_results: list[dict[str, Any]] | None = None,
     crawl_output_path: Path | None = None,
+    config: dict | None = None,
 ) -> list[Document]:
-    pdf_documents = load_pdf_documents(pdf_dir=pdf_dir)
+    pdf_documents = load_pdf_documents(pdf_dir=pdf_dir, config=config)
     crawl_documents = load_crawl_documents(
         crawl_results=crawl_results,
         crawl_output_path=crawl_output_path,
+        config=config,
     )
     return [*pdf_documents, *crawl_documents]
 
@@ -1000,15 +871,15 @@ def build_vector_store(documents: list[Document]):
     return FAISS.from_documents(chunks, embeddings)
 
 
-def save_vector_store(vector_store, index_path: Path | None = None) -> Path:
-    target_path = index_path or get_faiss_index_path()
+def save_vector_store(vector_store, index_path: Path | None = None, config: dict | None = None) -> Path:
+    target_path = index_path or get_faiss_index_path(config)
     target_path.mkdir(parents=True, exist_ok=True)
     vector_store.save_local(str(target_path))
     return target_path
 
 
-def load_vector_store(index_path: Path | None = None):
-    target_path = index_path or get_faiss_index_path()
+def load_vector_store(index_path: Path | None = None, config: dict | None = None):
+    target_path = index_path or get_faiss_index_path(config)
     index_file = target_path / "index.faiss"
     store_file = target_path / "index.pkl"
     if not index_file.exists() or not store_file.exists():
@@ -1043,28 +914,30 @@ def ingest_knowledge_base(
     crawl_results: list[dict[str, Any]] | None = None,
     crawl_output_path: Path | None = None,
     index_path: Path | None = None,
+    config: dict | None = None,
 ):
     documents = load_source_documents(
         pdf_dir=pdf_dir,
         crawl_results=crawl_results,
         crawl_output_path=crawl_output_path,
+        config=config,
     )
     vector_store = build_vector_store(documents)
-    save_vector_store(vector_store, index_path=index_path)
+    save_vector_store(vector_store, index_path=index_path, config=config)
     return vector_store
 
 
-def get_or_create_vector_store():
-    vector_store = load_vector_store()
+def get_or_create_vector_store(config: dict | None = None):
+    vector_store = load_vector_store(config=config)
     if vector_store is not None:
         return vector_store
 
-    documents = load_source_documents()
+    documents = load_source_documents(config=config)
     if not documents:
         return None
 
     try:
-        return ingest_knowledge_base()
+        return ingest_knowledge_base(config=config)
     except RagConfigurationError:
         raise
     except Exception as exc:
@@ -1077,10 +950,15 @@ def get_or_create_vector_store():
 # ========================
 
 
-def get_rag_response(query: str, config: dict = None) -> str:
+def get_rag_response(query: str, config: dict) -> str:
     return query_knowledge_base(query, config=config)
 
-def query_knowledge_base(query: str, config: dict = None) -> str:
+def query_knowledge_base(query: str, config: dict) -> str:
+    try:
+        _validate_rag_config(config)
+    except RagConfigurationError as exc:
+        return str(exc)
+
     cleaned_query = query.strip()
     if not cleaned_query:
         return "Please provide a knowledge question to search."
@@ -1089,39 +967,60 @@ def query_knowledge_base(query: str, config: dict = None) -> str:
     expanded_query = query_variants[1] if len(query_variants) > 1 else query_variants[0]
 
     try:
-        vector_store = get_or_create_vector_store()
+        vector_store = get_or_create_vector_store(config=config)
     except RagConfigurationError as exc:
         return str(exc)
     except Exception as exc:
-        return f"Unable to query the clinic knowledge base right now: {exc}"
+        return f"Unable to query the knowledge base right now: {exc}"
 
     if vector_store is None:
         return (
-            "The clinic knowledge base is empty right now. Add PDFs to "
-            f"'{get_pdf_directory()}' or crawl output to '{get_crawl_output_path()}', "
+            "The knowledge base is empty right now. Add PDFs to "
+            f"'{get_pdf_directory(config)}' or crawl output to '{get_crawl_output_path(config)}', "
             "then rebuild the FAISS index."
         )
 
     docs = _retrieve_semantic_documents(vector_store, query_variants)
     if not docs:
-        return "No relevant clinic knowledge was found for that question."
+        return "No relevant knowledge was found for that question."
 
     diverse_docs = _select_diverse_documents(docs)
     context_blocks = _build_context_blocks(diverse_docs)
     if not context_blocks:
         return "Relevant documents were retrieved, but they did not contain usable text."
 
-    return (
-        f"{config.get('rag_answer_instructions', SEMANTIC_ANSWER_INSTRUCTIONS) if config else SEMANTIC_ANSWER_INSTRUCTIONS}\n\n"
-        f"User question: {cleaned_query}\n"
-        f"Expanded retrieval query: {expanded_query}\n\n"
-        + "\n\n".join(context_blocks)
-    )
+    context_str = "\n\n".join(context_blocks)
+    human_msg_content = f"Question: {cleaned_query}\n\nContext:\n{context_str}\n\nAnswer clearly and concisely."
+
+    try:
+        from langchain_groq import ChatGroq
+        from app.config import settings
+        from langchain_core.messages import SystemMessage, HumanMessage
+
+        llm = ChatGroq(
+            model="openai/gpt-oss-120b",
+            # llama-3.1-8b-instant
+            # llama-3.3-70b-versatile
+            # openai/gpt-oss-120b
+            temperature=0.2,
+            api_key=settings.GROQ_API_KEY,
+        )
+
+        response = llm.invoke(
+            [
+                SystemMessage(content=config["rag_answer_instructions"]),
+                HumanMessage(content=human_msg_content),
+            ]
+        )
+        return str(response.content).strip()
+    except Exception as exc:
+        logger.exception("Final RAG generation failed.")
+        return f"Unable to generate the final answer right now: {exc}"
 
 
-def rebuild_default_index() -> Path:
-    vector_store = ingest_knowledge_base()
-    return save_vector_store(vector_store)
+def rebuild_default_index(config: dict | None = None) -> Path:
+    vector_store = ingest_knowledge_base(config=config)
+    return save_vector_store(vector_store, config=config)
 
 
 # ========================
@@ -1130,7 +1029,12 @@ def rebuild_default_index() -> Path:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build or rebuild the clinic FAISS knowledge index.")
+    from app.agent.config import AGENT_CONFIG
+
+    rag_config = AGENT_CONFIG["rag"]
+    _validate_rag_config(rag_config)
+
+    parser = argparse.ArgumentParser(description="Build or rebuild the FAISS knowledge index.")
     parser.add_argument(
         "--crawl-url",
         action="append",
@@ -1145,7 +1049,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.crawl_url:
-        output_path = crawl_and_save_websites(args.crawl_url)
+        output_path = crawl_and_save_websites(args.crawl_url, config=rag_config)
         print(f"Crawl output saved to {output_path}")
 
     if not args.rebuild and not args.crawl_url:
@@ -1153,11 +1057,9 @@ def main() -> None:
         return
 
     if args.rebuild:
-        index_path = rebuild_default_index()
+        index_path = rebuild_default_index(config=rag_config)
         print(f"FAISS index saved to {index_path}")
 
 
 if __name__ == "__main__":
     main()
-
-

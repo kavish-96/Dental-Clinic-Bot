@@ -20,7 +20,7 @@ class Settings:
     APP_TIMEZONE: str = get_env("APP_TIMEZONE", "Asia/Kolkata")
     
     RAG_PDF_DIR: str = get_env("RAG_PDF_DIR", "./data/rag/pdfs")
-    RAG_CRAWL_OUTPUT_PATH: str = get_env("RAG_CRAWL_OUTPUT_PATH", "./data/rag/crawl_output.json")
+    RAG_CRAWL_OUTPUT_PATH: str = get_env("RAG_CRAWL_OUTPUT_PATH", "./data/rag/webcrawling")
     RAG_FAISS_INDEX_DIR: str = get_env("RAG_FAISS_INDEX_DIR", "./faiss_index")
     RAG_EMBEDDING_MODEL: str = get_env(
         "RAG_EMBEDDING_MODEL",

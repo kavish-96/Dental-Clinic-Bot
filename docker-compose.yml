@@ -30,7 +30,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@db:5432/appointments
       RAG_PDF_DIR: ./data/rag/pdfs
-      RAG_CRAWL_OUTPUT_PATH: ./data/rag/crawl_output.json
+      RAG_CRAWL_OUTPUT_PATH: ./data/rag/webcrawling
       RAG_FAISS_INDEX_DIR: ./faiss_index
       RAG_EMBEDDING_MODEL: BAAI/bge-base-en
     volumes:

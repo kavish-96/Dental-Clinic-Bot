@@ -41,7 +41,7 @@ Chat-based dental clinic appointment booking using LLM and LangChain. Book, canc
    OPENWEATHERMAP_API_KEY=your_openweathermap_api_key_here
    DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/appointments
    RAG_PDF_DIR=./data/rag/pdfs
-   RAG_CRAWL_OUTPUT_PATH=./data/rag/crawl_output.json
+   RAG_CRAWL_OUTPUT_PATH=./data/rag/webcrawling
    RAG_FAISS_INDEX_DIR=./faiss_index
    RAG_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
    ```
@@ -61,7 +61,7 @@ Chat-based dental clinic appointment booking using LLM and LangChain. Book, canc
    python -m app.rag --rebuild
    ```
 
-   By default, PDFs are read from `backend/data/rag/pdfs`, crawl output is read from `backend/data/rag/crawl_output.json`, and the FAISS index is stored in `backend/faiss_index`.
+   By default, PDFs are read from `backend/data/rag/pdfs/<agent_id>`, crawl output is read from `backend/data/rag/webcrawling/<agent_id>.json`, and the FAISS index is stored in `backend/faiss_index/<agent_id>`.
 
 ## Frontend setup
 

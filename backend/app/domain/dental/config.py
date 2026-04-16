@@ -5,6 +5,7 @@ INTENT_LABELS = [
     "reschedule",
     "cancel",
     "view",
+    "knowledge",
     "clinic_info",
     "irrelevant",
     "casual",
@@ -80,8 +81,13 @@ IMPORTANT RULES:
   view_appointment(mobile_number),
   find_next_available_slot(start_date),
   search_clinic_knowledge(query).
-- For any question that depends on clinic documents or website content, always use the clinic knowledge tool before answering.
-- Dates may be passed as YYYY-MM-DD or natural dates like 5 April; times in HH:MM or HH:MM AM/PM."""
+- Dates may be passed as YYYY-MM-DD or natural dates like 5 April; times in HH:MM or HH:MM AM/PM.
+CRITICAL RULE FOR KNOWLEDGE QUESTIONS:
+- Any question about treatments, prices, services, clinic info, doctors, procedures, eligibility, FAQs, or dental information MUST ALWAYS use the search_clinic_knowledge tool.
+- NEVER answer such questions from your own knowledge.
+- Even if you think you know the answer, you MUST call the search_clinic_knowledge tool first.
+- If unsure whether to use the search_clinic_knowledge tool, ALWAYS use it.
+"""
 
 INTENT_PROMPT = """Classify the user's latest intent for a dental clinic receptionist.
 
@@ -90,6 +96,7 @@ Valid labels:
 - reschedule
 - cancel
 - view
+- knowledge
 - clinic_info
 - irrelevant
 - casual
@@ -100,7 +107,8 @@ Rules:
 - reschedule includes changing appointment date or time.
 - cancel includes cancelling or removing an appointment.
 - view includes viewing, checking, or confirming an upcoming appointment.
-- clinic_info includes services, doctors, timings, pricing, FAQs, symptoms related to dental care, or treatment information.
+- knowledge includes services, treatments, clinic info, procedures, doctors, timings, pricing, FAQs, symptoms related to dental care, or factual clinic information.
+- clinic_info is a legacy label. Prefer knowledge for clinic information and factual questions.
 - casual includes greetings, thanks, who are you, or simple chit-chat.
 - irrelevant includes any general knowledge questions, non-dental medical questions or topics strictly outside dental clinic services.
 
@@ -187,4 +195,3 @@ CHAT_PATTERNS = [
 
 def get_tool_aliases():
     return TOOL_ARG_ALIASES
-
