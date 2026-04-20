@@ -2,9 +2,16 @@ from datetime import date, datetime, time
 
 from sqlalchemy.orm import Session
 
-from .models import Appointment
+from .models import (
+    Appointment,
+    AgentPrompt,
+    AgentRAGConfig,
+    AgentSynonym,
+    AgentIntent,
+    AgentToolAlias,
+)
 from .datetime_utils import current_datetime
-
+import json
 
 def _combine_slot(date_val: date, time_val: time) -> datetime:
     return datetime.combine(date_val, time_val)
@@ -117,3 +124,63 @@ def update_specific_appointment(
     db.commit()
     db.refresh(apt)
     return apt
+
+
+def get_active_prompts(db: Session, agent_id: str) -> dict:
+    """Fetch active prompts for a specific agent as a dictionary."""
+    prompts = db.query(AgentPrompt).filter(
+        AgentPrompt.agent_id == agent_id,
+        AgentPrompt.is_active == True
+    ).all()
+    
+    return {p.prompt_type: p.content for p in prompts}
+
+
+def get_rag_config(db: Session, agent_id: str) -> AgentRAGConfig | None:
+    """Fetch the latest RAG configuration for an agent."""
+    return db.query(AgentRAGConfig).filter(
+        AgentRAGConfig.agent_id == agent_id
+    ).order_by(AgentRAGConfig.created_at.desc()).first()
+
+
+def get_synonyms(db: Session, agent_id: str) -> dict:
+    """Fetch synonyms grouped by category for an agent."""
+    synonyms = db.query(AgentSynonym).filter(AgentSynonym.agent_id == agent_id).all()
+    
+    result = {}
+    for syn in synonyms:
+        try:
+            words_list = json.loads(syn.words)
+        except (json.JSONDecodeError, TypeError):
+            # Fallback to comma-separated if not JSON
+            words_list = [w.strip() for w in syn.words.split(",") if w.strip()]
+            
+        if syn.category in result:
+            result[syn.category].extend(words_list)
+        else:
+            result[syn.category] = words_list
+            
+    return result
+
+
+def get_intents(db: Session, agent_id: str) -> list[str]:
+    """Fetch a list of supported intent labels for an agent."""
+    intents = db.query(AgentIntent).filter(AgentIntent.agent_id == agent_id).all()
+    return [intent.label for intent in intents]
+
+
+def get_tool_aliases(db: Session, agent_id: str) -> dict:
+    """Fetch tool aliases as a dictionary {tool_name: [aliases]} for an agent."""
+    aliases = db.query(AgentToolAlias).filter(AgentToolAlias.agent_id == agent_id).all()
+    
+    result = {}
+    for alias_entry in aliases:
+        try:
+            alias_list = json.loads(alias_entry.aliases)
+        except (json.JSONDecodeError, TypeError):
+            # Fallback to comma-separated if not JSON
+            alias_list = [a.strip() for a in alias_entry.aliases.split(",") if a.strip()]
+            
+        result[alias_entry.tool_name] = alias_list
+        
+    return result

@@ -20,6 +20,7 @@ DEFAULT_TOOLS = [
     "_clinic_knowledge"
 ]
 
+from app.agent.config import DynamicAgentConfig
 from app.agent.config import AGENT_CONFIG
 
 def run_agent(messages: List[BaseMessage], db: Session) -> str:
@@ -38,7 +39,16 @@ def run_agent(messages: List[BaseMessage], db: Session) -> str:
         api_key=settings.GROQ_API_KEY,
     )
     
-    config = AGENT_CONFIG
+    dynamic_config = DynamicAgentConfig(agent_id="dental_bot", db=db)
+    
+    config = {
+        "agent_id": "dental_bot",
+        "tools": AGENT_CONFIG.get("tools", DEFAULT_TOOLS),
+        "prompts": dynamic_config,
+        "rag": dynamic_config.rag,
+        "intent_labels": dynamic_config.intent_labels,
+    }
+    
     tools = load_tools(config.get("tools", DEFAULT_TOOLS), db)
     domain_service = DentalService(db)
 

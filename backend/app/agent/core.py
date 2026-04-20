@@ -13,8 +13,6 @@ from langchain_core.messages import (
 from app.agent.prompts import (
     get_system_prompt,
     get_context_resolution_prompt,
-    get_irrelevant_redirect_prompt,
-    get_knowledge_summary_prompt
 )
 from app.agent.intent import IntentSystem
 from app.datetime_utils import current_date, current_datetime
@@ -99,7 +97,11 @@ class AgentCore:
         if not isinstance(tool_args, dict):
             return {}
 
-        aliases = self.domain_service.get_tool_aliases().get(tool_name, {})
+        aliases = self.domain_service.get_tool_aliases(
+            # agent_id=self.config.get("agent_id"),
+            # db=self.domain_service.db
+            agent_id=self.config.get("agent_id")
+        ).get(tool_name, {})
         normalized_args: dict = {}
         for key, value in tool_args.items():
             normalized_key = aliases.get(key, key)
@@ -139,8 +141,11 @@ class AgentCore:
                     "config": self.config,
                     "agent_id": self.config.get("agent_id")
                 }
+                
                 if 'context' in tool.func.__code__.co_varnames:
                     tool_args['context'] = ctx
+                
+                
                 result = tool.invoke(tool_args)
             except Exception:
                 logger.exception(

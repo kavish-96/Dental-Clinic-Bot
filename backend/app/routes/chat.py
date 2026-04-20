@@ -69,7 +69,6 @@ def chat(request: ChatRequest, db: Session = Depends(get_db)):
             return text
         
         try:
-            ist = timezone(timedelta(hours=5, minutes=30))
 
             message_time = datetime.fromtimestamp(
                 start_time_ms / 1000,

@@ -8,9 +8,8 @@ from sqlalchemy.orm import Session
 
 from app import crud
 from app.datetime_utils import current_date, parse_date_input
-from app.agent.prompts import get_appointment_collection_prompt, get_followup_prompt, get_irrelevant_redirect_prompt
+from app.agent.prompts import get_response_prompt
 from app.domain.dental import config
-
 logger = logging.getLogger(__name__)
 
 MOBILE_NUMBER_PATTERN = re.compile(r"(?<!\d)(\d{10})(?!\d)")
@@ -47,6 +46,36 @@ APPOINTMENT_CONTACT_PATTERNS = [
     ),
 ]
 
+APPOINTMENT_ACTION_PATTERNS = [
+    re.compile(
+        r"\b(?:i\s+want|want\s+to|need\s+to|would\s+like\s+to|please|help\s+me|can\s+you)\b.*\b(?:book|schedule|reserve|make|set\s+up)\b.*\b(?:appointment|booking|visit|slot)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:i\s+need|need|want|looking\s+for|looking\s+to|get|take)\b.*\b(?:appointment|booking|visit|slot)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:book|schedule|reserve|make|set\s+up)\b.*\b(?:appointment|booking|visit|slot)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:appointment|booking|visit|slot)\b.*\b(?:book|schedule|reserve|make|set\s+up)\b",
+        re.IGNORECASE,
+    ),
+]
+
+APPOINTMENT_GENERAL_QUESTION_PATTERNS = [
+    re.compile(
+        r"\b(?:how|where|what)\b.*\b(?:book|booking|appointment|schedule|visit)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:appointment|booking|clinic)\b.*\b(?:timing|timings|hours|open|close|available)\b",
+        re.IGNORECASE,
+    ),
+]
+
 TOOL_FALLBACK_MESSAGES = {
     "book_appointment": "I need the mobile number, date, and time to book that.",
     "cancel_appointment": "Please share the mobile number for that appointment.",
@@ -60,8 +89,8 @@ class DentalService:
     def __init__(self, db: Session):
         self.db = db
 
-    def get_tool_aliases(self):
-        return config.get_tool_aliases()
+    def get_tool_aliases(self, agent_id: str):
+        return crud.get_tool_aliases(self.db, agent_id)
 
     def handle_small_talk(self, messages: List[BaseMessage]) -> str | None:
         latest_user_message = self._latest_user_message(messages)
@@ -133,7 +162,7 @@ class DentalService:
             try:
                 irrelevant_ai = llm.invoke(
                     [
-                        SystemMessage(content=get_irrelevant_redirect_prompt(agent_config.get("prompts"))),
+                        SystemMessage(content=get_response_prompt(agent_config.get("prompts"))),
                         HumanMessage(content=resolved_user_message or latest_user_message),
                     ]
                 )
@@ -256,6 +285,18 @@ class DentalService:
             return False
         return any(pattern.search(text) for pattern in APPOINTMENT_CONTACT_PATTERNS)
 
+    def looks_like_appointment_general_question(self, text: str) -> bool:
+        if not text:
+            return False
+        return any(pattern.search(text) for pattern in APPOINTMENT_GENERAL_QUESTION_PATTERNS)
+
+    def looks_like_appointment_action(self, text: str) -> bool:
+        if not text:
+            return False
+        if self.looks_like_next_slot_request(text):
+            return True
+        return any(pattern.search(text) for pattern in APPOINTMENT_ACTION_PATTERNS)
+
     def should_collect_appointment_details(
         self,
         llm: ChatGroq,
@@ -269,25 +310,18 @@ class DentalService:
             return False
         if self.looks_like_appointment_contact_request(latest_user_message):
             return True
-
-        prompts_cfg = agent_config.get("prompts") if agent_config else config
-        try:
-            classified = llm.invoke(
-                [
-                    SystemMessage(content=get_appointment_collection_prompt(prompts_cfg)),
-                    HumanMessage(
-                        content=(
-                            f"Conversation:\n{conversation_snippet}\n\n"
-                            f"Latest message: {latest_user_message}"
-                        )
-                    ),
-                ]
-            )
-            label = str(classified.content or "").strip().lower()
-            return label == "collect"
-        except Exception:
-            logger.exception("Appointment collection classification failed")
+        if self.looks_like_appointment_general_question(latest_user_message):
             return False
+        if (
+            MOBILE_NUMBER_PATTERN.search(latest_user_message)
+            or self.extract_date_text(latest_user_message)
+            or self.extract_time_text(latest_user_message)
+        ):
+            return True
+        if self.looks_like_another_booking_confirmation(latest_user_message):
+            return True
+
+        return self.looks_like_appointment_action(latest_user_message)
 
     def handle_booking_flow(
         self,
@@ -331,11 +365,11 @@ class DentalService:
         if mobile_number and date_text and not time_text:
             missing_details.append("appointment time")
 
-        prompts_cfg = agent_config.get("prompts") if agent_config else config
+        prompts_cfg = agent_config.get("prompts")
         try:
             followup_ai = llm.invoke(
                 [
-                    SystemMessage(content=get_followup_prompt(prompts_cfg)),
+                    SystemMessage(content=get_response_prompt(prompts_cfg)),
                     HumanMessage(
                         content=(
                             f"Latest user message: {latest_user_message}\n"

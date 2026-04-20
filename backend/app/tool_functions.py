@@ -9,9 +9,7 @@ from app import crud
 from app.datetime_utils import current_date, current_datetime, parse_date_input, parse_time_input
 from app.rag import get_rag_response
 
-
 # --- Pydantic schemas for tool args ---
-
 
 class BookAppointmentInput(BaseModel):
     mobile_number: str = Field(description="User's mobile number (primary identifier)")
@@ -48,16 +46,17 @@ class ClinicKnowledgeInput(BaseModel):
     query: str = Field(description="Question about clinic information from PDFs or website content")
 
 
-def _resolve_rag_config(context: dict | None) -> dict:
+def _resolve_rag_config(context: dict | None, db: Session) -> dict:
     agent_config = context.get("config", {}) if context else {}
     if isinstance(agent_config, dict) and "rag" in agent_config:
         return agent_config["rag"]
     if isinstance(agent_config, dict) and "rag_synonyms" in agent_config:
         return agent_config
 
-    from app.agent.config import AGENT_CONFIG
+    from app.agent.config import DynamicAgentConfig
+    dyn_config = DynamicAgentConfig("dental_bot", db)
+    return dyn_config.rag
 
-    return AGENT_CONFIG["rag"]
 
 
 def _parse_time(s: str) -> time:
@@ -221,7 +220,7 @@ def search_clinic_knowledge(db: Session):
     def search_clinic_knowledge_tool(query: str, context: dict = None) -> str:
         """Retrieve relevant clinic knowledge from indexed PDFs and website content before answering informational questions."""
         try:
-            return get_rag_response(query, config=_resolve_rag_config(context))
+            return get_rag_response(query, config=_resolve_rag_config(context, db=db))
         except Exception as exc:
             return f"Unable to retrieve clinic knowledge right now: {exc}"
     search_clinic_knowledge_tool.name = "search_clinic_knowledge"

@@ -1029,36 +1029,42 @@ def rebuild_default_index(config: dict | None = None) -> Path:
 
 
 def main() -> None:
-    from app.agent.config import AGENT_CONFIG
+    from app.database import SessionLocal
+    from app.agent.config import DynamicAgentConfig
 
-    rag_config = AGENT_CONFIG["rag"]
-    _validate_rag_config(rag_config)
+    db = SessionLocal()
+    try:
+        config_obj = DynamicAgentConfig("dental_bot", db)
+        rag_config = config_obj.rag
+        _validate_rag_config(rag_config)
 
-    parser = argparse.ArgumentParser(description="Build or rebuild the FAISS knowledge index.")
-    parser.add_argument(
-        "--crawl-url",
-        action="append",
-        default=[],
-        help="Website URL to crawl with crawl4ai and save into the configured crawl output JSON.",
-    )
-    parser.add_argument(
-        "--rebuild",
-        action="store_true",
-        help="Rebuild the FAISS index from the configured PDF and crawl sources.",
-    )
-    args = parser.parse_args()
+        parser = argparse.ArgumentParser(description="Build or rebuild the FAISS knowledge index.")
+        parser.add_argument(
+            "--crawl-url",
+            action="append",
+            default=[],
+            help="Website URL to crawl with crawl4ai and save into the configured crawl output JSON.",
+        )
+        parser.add_argument(
+            "--rebuild",
+            action="store_true",
+            help="Rebuild the FAISS index from the configured PDF and crawl sources.",
+        )
+        args = parser.parse_args()
 
-    if args.crawl_url:
-        output_path = crawl_and_save_websites(args.crawl_url, config=rag_config)
-        print(f"Crawl output saved to {output_path}")
+        if args.crawl_url:
+            output_path = crawl_and_save_websites(args.crawl_url, config=rag_config)
+            print(f"Crawl output saved to {output_path}")
 
-    if not args.rebuild and not args.crawl_url:
-        parser.print_help()
-        return
+        if not args.rebuild and not args.crawl_url:
+            parser.print_help()
+            return
 
-    if args.rebuild:
-        index_path = rebuild_default_index(config=rag_config)
-        print(f"FAISS index saved to {index_path}")
+        if args.rebuild:
+            index_path = rebuild_default_index(config=rag_config)
+            print(f"FAISS index saved to {index_path}")
+    finally:
+        db.close()
 
 
 if __name__ == "__main__":
