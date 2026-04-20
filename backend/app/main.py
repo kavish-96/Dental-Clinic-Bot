@@ -11,6 +11,7 @@ from .config import settings
 from .database import init_db, get_db
 from .datetime_utils import parse_date_input, parse_time_input
 from .models import Appointment
+from .routes.admin import router as admin_router
 from .routes.chat import router as chat_router
 from . import crud
 
@@ -37,6 +38,7 @@ app.add_middleware(
 )
 
 app.include_router(chat_router)
+app.include_router(admin_router)
 
 
 @app.get("/appointments")
