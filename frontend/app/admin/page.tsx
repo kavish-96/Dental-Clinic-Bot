@@ -340,7 +340,7 @@ export default function AdminPage() {
                         },
                       })
                     }
-                    className="min-h-[400px] bg-[#fbfcfc]"
+                    className="min-h-[380px] bg-[#fbfcfc]"
                   />
                 </div>
               </Card>
