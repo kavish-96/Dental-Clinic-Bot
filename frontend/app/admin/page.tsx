@@ -67,6 +67,55 @@ function SaveButton({
   );
 }
 
+function EditableKeyField({
+  initialValue,
+  ariaLabel,
+  placeholder,
+  className,
+  onCommit,
+}: {
+  initialValue: string;
+  ariaLabel: string;
+  placeholder?: string;
+  className?: string;
+  onCommit: (value: string) => void;
+}) {
+  const [draft, setDraft] = useState(initialValue);
+
+  useEffect(() => {
+    setDraft(initialValue);
+  }, [initialValue]);
+
+  function commit() {
+    const nextValue = draft.trim();
+    if (!nextValue || nextValue === initialValue) {
+      setDraft(initialValue);
+      return;
+    }
+    onCommit(nextValue);
+  }
+
+  return (
+    <Input
+      value={draft}
+      aria-label={ariaLabel}
+      placeholder={placeholder}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          commit();
+        }
+        if (event.key === "Escape") {
+          setDraft(initialValue);
+        }
+      }}
+      className={className}
+    />
+  );
+}
+
 export default function AdminPage() {
   const [agentId, setAgentId] = useState("dental_bot");
   const [activeSection, setActiveSection] = useState<Section>("prompts");
@@ -278,7 +327,6 @@ export default function AdminPage() {
                       <p className="text-sm font-semibold text-zinc-900">
                         {PROMPT_TABS.find((tab) => tab.key === activePrompt)?.label} prompt
                       </p>
-                      <p className="text-xs text-zinc-500">Version {prompts[activePrompt]?.version || 1}</p>
                     </div>
                   </div>
                   <TextArea
@@ -292,7 +340,7 @@ export default function AdminPage() {
                         },
                       })
                     }
-                    className="min-h-[420px] bg-[#fbfcfc]"
+                    className="min-h-[400px] bg-[#fbfcfc]"
                   />
                 </div>
               </Card>
@@ -359,14 +407,13 @@ export default function AdminPage() {
                   }
                 />
                 <div className="space-y-4 p-5">
-                  {Object.entries(synonyms).map(([category, words]) => (
-                    <div key={category} className="rounded-lg border border-teal-200 bg-teal-50/70 p-4">
+                  {Object.entries(synonyms).map(([category, words], index) => (
+                    <div key={`${category}-${index}`} className="rounded-lg border border-teal-200 bg-teal-50/70 p-4">
                       <div className="mb-3 flex items-center justify-between gap-3">
-                        <Input
-                          value={category}
-                          aria-label="Category"
-                          onChange={(event) => {
-                            const nextCategory = event.target.value;
+                        <EditableKeyField
+                          initialValue={category}
+                          ariaLabel="Category"
+                          onCommit={(nextCategory) => {
                             const next = { ...synonyms };
                             delete next[category];
                             next[nextCategory] = words;
@@ -441,14 +488,13 @@ export default function AdminPage() {
                   }
                 />
                 <div className="space-y-4 p-5">
-                  {Object.entries(toolAliases).map(([toolName, aliases]) => (
-                    <div key={toolName} className="rounded-lg border border-teal-200 bg-teal-50/70 p-4">
+                  {Object.entries(toolAliases).map(([toolName, aliases], toolIndex) => (
+                    <div key={`${toolName}-${toolIndex}`} className="rounded-lg border border-teal-200 bg-teal-50/70 p-4">
                       <div className="mb-4 flex items-center justify-between gap-3">
-                        <Input
-                          value={toolName}
-                          aria-label="Tool name"
-                          onChange={(event) => {
-                            const nextToolName = event.target.value;
+                        <EditableKeyField
+                          initialValue={toolName}
+                          ariaLabel="Tool name"
+                          onCommit={(nextToolName) => {
                             const next = { ...toolAliases };
                             delete next[toolName];
                             next[nextToolName] = aliases;
@@ -469,14 +515,13 @@ export default function AdminPage() {
                         </button>
                       </div>
                       <div className="space-y-2">
-                        {Object.entries(aliases).map(([alias, target]) => (
-                          <div key={alias} className="grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
-                            <Input
-                              value={alias}
-                              aria-label="Alias"
+                        {Object.entries(aliases).map(([alias, target], aliasIndex) => (
+                          <div key={`${alias}-${aliasIndex}`} className="grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
+                            <EditableKeyField
+                              initialValue={alias}
+                              ariaLabel="Alias"
                               placeholder="alias"
-                              onChange={(event) => {
-                                const nextAlias = event.target.value;
+                              onCommit={(nextAlias) => {
                                 const nextAliases = { ...aliases };
                                 delete nextAliases[alias];
                                 nextAliases[nextAlias] = target;

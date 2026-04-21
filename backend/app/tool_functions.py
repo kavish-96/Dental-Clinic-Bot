@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app import crud
 from app.datetime_utils import current_date, current_datetime, parse_date_input, parse_time_input
+from app.domain.dental.service import is_valid_date
 from app.rag import get_rag_response
 
 # --- Pydantic schemas for tool args ---
@@ -79,6 +80,9 @@ def book_appointment(db: Session):
         context: dict = None
     ) -> str:
         """Book a new dental appointment for a mobile number."""
+        if not is_valid_date(date):
+            return "That date is not valid. Please provide a correct date."
+
         try:
             d = _parse_date(date)
             t = _parse_time(time)

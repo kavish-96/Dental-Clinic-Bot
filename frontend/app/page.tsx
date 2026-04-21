@@ -126,7 +126,7 @@ export default function ChatPage() {
                       Start a guided appointment conversation
                     </div>
                     <h4 className="text-2xl font-semibold text-zinc-950">
-                      Ask about availability, appointments, or clinic related information and services.
+                      Ask about appointments or clinic related information.
                     </h4>
                     <p className="text-sm leading-6 text-zinc-500">
                       Try: I want to book an appointment tomorrow at 4 PM.

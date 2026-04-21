@@ -1,6 +1,7 @@
 import re
 import logging
 import json
+from datetime import datetime
 from typing import List, Union, Dict
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from langchain_groq import ChatGroq
@@ -84,6 +85,15 @@ TOOL_FALLBACK_MESSAGES = {
     "find_next_available_slot": "I couldn't check that just now. Please tell me the date again.",
     "search_clinic_knowledge": "",
 }
+
+
+def is_valid_date(date_str: str) -> bool:
+    try:
+        parsed_date = parse_date_input(date_str)
+        datetime.strptime(parsed_date.isoformat(), "%Y-%m-%d")
+        return True
+    except ValueError:
+        return False
 
 class DentalService:
     def __init__(self, db: Session):
