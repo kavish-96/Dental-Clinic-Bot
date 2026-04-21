@@ -1,21 +1,23 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Card } from "./components/Card";
 import { Input, TextArea } from "./components/Input";
 import { SectionHeader } from "./components/SectionHeader";
 import { TagInput } from "./components/TagInput";
 import {
   adminApi,
+  type KnowledgeStatusResponse,
   type PromptType,
   type PromptsResponse,
   type RAGResponse,
   type ToolAliasesResponse,
 } from "./lib/api";
 
-type Section = "prompts" | "rag" | "synonyms" | "intents" | "tool-aliases";
+type Section = "prompts" | "rag" | "synonyms" | "intents" | "tool-aliases" | "knowledge-base";
 type SaveState = "idle" | "loading" | "saving" | "saved" | "error";
+type KnowledgeTab = "pdfs" | "websites";
 
 const PROMPT_TABS: { key: PromptType; label: string }[] = [
   { key: "system", label: "System" },
@@ -30,6 +32,7 @@ const NAV_ITEMS: { key: Section; label: string; hint: string }[] = [
   { key: "synonyms", label: "Synonyms", hint: "Search expansion" },
   { key: "intents", label: "Intents", hint: "Routing labels" },
   { key: "tool-aliases", label: "Tool Aliases", hint: "Tool argument mapping" },
+  { key: "knowledge-base", label: "Knowledge Base", hint: "PDFs and websites" },
 ];
 
 const emptyPrompts: PromptsResponse["prompts"] = {
@@ -44,6 +47,17 @@ const emptyRag: Omit<RAGResponse, "agent_id"> = {
   answer_instructions: "",
   multi_query_prompt: "",
   focus_keywords: [],
+};
+
+const emptyKnowledgeStatus: KnowledgeStatusResponse = {
+  agent_id: "dental_bot",
+  pdf_count: 0,
+  url_count: 0,
+  pdf_files: [],
+  urls: [],
+  last_indexed_time: null,
+  indexing: false,
+  error: null,
 };
 
 function SaveButton({
@@ -116,13 +130,52 @@ function EditableKeyField({
   );
 }
 
+function TrashButton({
+  onClick,
+  disabled,
+  label,
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      className="rounded-lg p-2 text-rose-600 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
+        <path d="M3 6h18" />
+        <path d="M8 6V4h8v2" />
+        <path d="M19 6l-1 14H6L5 6" />
+        <path d="M10 11v6" />
+        <path d="M14 11v6" />
+      </svg>
+    </button>
+  );
+}
+
 export default function AdminPage() {
   const [agentId, setAgentId] = useState("dental_bot");
   const [activeSection, setActiveSection] = useState<Section>("prompts");
   const [activePrompt, setActivePrompt] = useState<PromptType>("system");
+  const [knowledgeTab, setKnowledgeTab] = useState<KnowledgeTab>("pdfs");
   const [saveState, setSaveState] = useState<SaveState>("loading");
   const [toast, setToast] = useState("");
   const [error, setError] = useState("");
+  const [knowledge, setKnowledge] = useState<KnowledgeStatusResponse>(emptyKnowledgeStatus);
+  const [urlInput, setUrlInput] = useState("");
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [addingUrl, setAddingUrl] = useState(false);
+  const [removingPdf, setRemovingPdf] = useState<string | null>(null);
+  const [removingUrl, setRemovingUrl] = useState<string | null>(null);
+  const [rebuilding, setRebuilding] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
+  const wasIndexingRef = useRef(false);
 
   const [prompts, setPrompts] = useState<PromptsResponse["prompts"]>(emptyPrompts);
   const [rag, setRag] = useState<Omit<RAGResponse, "agent_id">>(emptyRag);
@@ -131,6 +184,23 @@ export default function AdminPage() {
   const [toolAliases, setToolAliases] = useState<ToolAliasesResponse["tool_aliases"]>({});
 
   const saving = saveState === "saving";
+  const knowledgeBusy =
+    knowledge.indexing || uploading || addingUrl || rebuilding || !!removingPdf || !!removingUrl;
+
+  function showToast(message: string) {
+    setToast(message);
+    window.setTimeout(() => {
+      setToast((current) => (current === message ? "" : current));
+    }, 2200);
+  }
+
+  async function refreshKnowledgeStatus(
+    currentAgentId: string,
+  ): Promise<KnowledgeStatusResponse> {
+    const next = await adminApi.getKnowledgeStatus(currentAgentId);
+    setKnowledge(next);
+    return next;
+  }
 
   useEffect(() => {
     let alive = true;
@@ -140,13 +210,14 @@ export default function AdminPage() {
       setError("");
 
       try {
-        const [promptsData, ragData, synonymsData, intentsData, toolAliasesData] =
+        const [promptsData, ragData, synonymsData, intentsData, toolAliasesData, knowledgeData] =
           await Promise.all([
             adminApi.getPrompts(agentId),
             adminApi.getRag(agentId),
             adminApi.getSynonyms(agentId),
             adminApi.getIntents(agentId),
             adminApi.getToolAliases(agentId),
+            adminApi.getKnowledgeStatus(agentId),
           ]);
 
         if (!alive) return;
@@ -160,6 +231,7 @@ export default function AdminPage() {
         setSynonyms(synonymsData.synonyms);
         setIntents(intentsData.intents);
         setToolAliases(toolAliasesData.tool_aliases);
+        setKnowledge(knowledgeData);
         setSaveState("idle");
       } catch (err) {
         if (!alive) return;
@@ -176,10 +248,9 @@ export default function AdminPage() {
   }, [agentId]);
 
   function showSaved() {
-    setToast("Saved successfully");
+    showToast("Saved successfully");
     setSaveState("saved");
     window.setTimeout(() => {
-      setToast("");
       setSaveState("idle");
     }, 2200);
   }
@@ -196,8 +267,121 @@ export default function AdminPage() {
     }
   }
 
+  useEffect(() => {
+    let intervalId: number | undefined;
+    if (knowledge.indexing) {
+      intervalId = window.setInterval(() => {
+        void refreshKnowledgeStatus(agentId);
+      }, 2000);
+    }
+    if (wasIndexingRef.current && !knowledge.indexing && !knowledge.error) {
+      showToast("Index updated");
+    }
+    wasIndexingRef.current = knowledge.indexing;
+    return () => {
+      if (intervalId) {
+        window.clearInterval(intervalId);
+      }
+    };
+  }, [agentId, knowledge.error, knowledge.indexing]);
+
+  async function handlePdfUpload(file: File | null) {
+    if (!file) return;
+    setUploading(true);
+    setUploadProgress(0);
+    setError("");
+    try {
+      await adminApi.uploadPdf(agentId, file, setUploadProgress);
+      showToast("Upload successful");
+      await refreshKnowledgeStatus(agentId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Upload failed.");
+    } finally {
+      setUploading(false);
+      setUploadProgress(null);
+      setDragActive(false);
+    }
+  }
+
+  async function handleAddUrl() {
+    const nextUrl = urlInput.trim();
+    if (!nextUrl || knowledgeBusy) return;
+    setAddingUrl(true);
+    setError("");
+    try {
+      const response = await adminApi.addUrl(agentId, nextUrl);
+      setUrlInput("");
+      showToast(response.detail || "URL added successfully");
+      await refreshKnowledgeStatus(agentId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to add URL.");
+    } finally {
+      setAddingUrl(false);
+    }
+  }
+
+  async function handleDeletePdf(fileName: string) {
+    if (knowledgeBusy) return;
+    setRemovingPdf(fileName);
+    setError("");
+    try {
+      const response = await adminApi.deletePdf(agentId, fileName);
+      showToast(response.detail || "PDF removed");
+      await refreshKnowledgeStatus(agentId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to remove PDF.");
+    } finally {
+      setRemovingPdf(null);
+    }
+  }
+
+  async function handleDeleteUrl(url: string) {
+    if (knowledgeBusy) return;
+    setRemovingUrl(url);
+    setError("");
+    try {
+      const response = await adminApi.deleteUrl(agentId, url);
+      showToast(response.detail || "URL removed");
+      await refreshKnowledgeStatus(agentId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to remove URL.");
+    } finally {
+      setRemovingUrl(null);
+    }
+  }
+
+  async function handleRebuildIndex() {
+    if (knowledge.indexing || rebuilding) return;
+    setRebuilding(true);
+    setError("");
+    try {
+      const response = await adminApi.rebuildIndex(agentId);
+      showToast(response.detail || "Index rebuild started");
+      await refreshKnowledgeStatus(agentId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to rebuild index.");
+    } finally {
+      setRebuilding(false);
+    }
+  }
+
+  function formatIndexedTime(value: string | null) {
+    if (!value) return "Not indexed yet";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleString();
+  }
+
   return (
     <div className="h-screen overflow-hidden bg-[#f6f8f7] text-zinc-950">
+      {knowledge.indexing && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/40 backdrop-blur-[2px]">
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-6 py-4 text-center shadow-xl">
+            <p className="text-sm font-semibold text-amber-900">Updating knowledge base...</p>
+            <p className="mt-1 text-sm text-amber-800">Please wait until reindexing is complete.</p>
+          </div>
+        </div>
+      )}
       <div className="flex h-full min-h-0">
         <aside className="hidden h-screen w-72 shrink-0 border-r border-zinc-200 bg-white/85 px-4 py-5 shadow-[10px_0_35px_rgba(30,41,59,0.05)] backdrop-blur lg:block">
           <div className="mb-8 px-2">
@@ -579,6 +763,204 @@ export default function AdminPage() {
                   >
                     Add tool
                   </button>
+                </div>
+              </Card>
+            )}
+
+            {activeSection === "knowledge-base" && (
+              <Card>
+                <SectionHeader
+                  eyebrow="Knowledge"
+                  title="Knowledge Base"
+                  description="Manage PDFs and website sources for agent-scoped retrieval and automatic FAISS indexing."
+                />
+                <div className="space-y-5 p-5">
+                  <div className="grid gap-4 md:grid-cols-3">
+                    <div className="rounded-lg border border-teal-200 bg-teal-50/70 p-4">
+                      <p className="text-xs font-semibold uppercase text-teal-700">PDFs</p>
+                      <p className="mt-2 text-3xl font-semibold text-zinc-950">{knowledge.pdf_count}</p>
+                    </div>
+                    <div className="rounded-lg border border-teal-200 bg-teal-50/70 p-4">
+                      <p className="text-xs font-semibold uppercase text-teal-700">Websites</p>
+                      <p className="mt-2 text-3xl font-semibold text-zinc-950">{knowledge.url_count}</p>
+                    </div>
+                    <div className="rounded-lg border border-teal-200 bg-teal-50/70 p-4">
+                      <p className="text-xs font-semibold uppercase text-teal-700">Last indexed</p>
+                      <p className="mt-2 text-sm font-medium text-zinc-700">
+                        {formatIndexedTime(knowledge.last_indexed_time)}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setKnowledgeTab("pdfs")}
+                        disabled={knowledge.indexing}
+                        className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+                          knowledgeTab === "pdfs"
+                            ? "bg-teal-600 text-white shadow-md shadow-teal-700/20"
+                            : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
+                        } disabled:cursor-not-allowed disabled:opacity-60`}
+                      >
+                        PDFs
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setKnowledgeTab("websites")}
+                        disabled={knowledge.indexing}
+                        className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+                          knowledgeTab === "websites"
+                            ? "bg-teal-600 text-white shadow-md shadow-teal-700/20"
+                            : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
+                        } disabled:cursor-not-allowed disabled:opacity-60`}
+                      >
+                        Websites
+                      </button>
+                    </div>
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                      <p className="text-sm text-zinc-500">
+                        Changes to PDFs and websites are staged until you rebuild the index.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => void handleRebuildIndex()}
+                        disabled={knowledgeBusy}
+                        className="rounded-lg border border-amber-300 bg-amber-100 px-4 py-2 text-sm font-semibold text-amber-900 transition hover:-translate-y-0.5 hover:bg-amber-200 disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {rebuilding || knowledge.indexing ? "Rebuilding..." : "Reload Index"}
+                      </button>
+                    </div>
+                  </div>
+
+                  {knowledge.indexing && (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800">
+                      Updating knowledge base...
+                    </div>
+                  )}
+                  {knowledge.error && (
+                    <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                      {knowledge.error}
+                    </div>
+                  )}
+
+                  {knowledgeTab === "pdfs" && (
+                    <div className="space-y-4">
+                      <label
+                        className={`block rounded-lg border-2 border-dashed p-6 text-center transition ${
+                          dragActive
+                            ? "border-teal-500 bg-teal-50"
+                            : "border-teal-200 bg-teal-50/70 hover:border-teal-300"
+                        } ${knowledgeBusy ? "cursor-not-allowed opacity-70" : "cursor-pointer"}`}
+                        onDragOver={(event) => {
+                          event.preventDefault();
+                          if (!knowledgeBusy) setDragActive(true);
+                        }}
+                        onDragLeave={() => setDragActive(false)}
+                        onDrop={(event) => {
+                          event.preventDefault();
+                          if (knowledgeBusy) return;
+                          const droppedFile = event.dataTransfer.files?.[0] || null;
+                          void handlePdfUpload(droppedFile);
+                        }}
+                      >
+                        <input
+                          type="file"
+                          accept=".pdf,application/pdf"
+                          className="hidden"
+                          disabled={knowledgeBusy}
+                          onChange={(event) => {
+                            const selectedFile = event.target.files?.[0] || null;
+                            void handlePdfUpload(selectedFile);
+                            event.currentTarget.value = "";
+                          }}
+                        />
+                        <p className="text-base font-semibold text-zinc-950">Drag and drop a PDF here</p>
+                        <p className="mt-2 text-sm text-zinc-500">or click to choose a file for {agentId}</p>
+                        {uploadProgress !== null && (
+                          <div className="mx-auto mt-4 max-w-md">
+                            <div className="h-2 rounded-full bg-white">
+                              <div
+                                className="h-2 rounded-full bg-teal-600 transition-all"
+                                style={{ width: `${uploadProgress}%` }}
+                              />
+                            </div>
+                            <p className="mt-2 text-xs font-semibold text-teal-700">{uploadProgress}% uploaded</p>
+                          </div>
+                        )}
+                      </label>
+
+                      <div className="rounded-lg border border-teal-200 bg-teal-50/70 p-4">
+                        <p className="text-sm font-semibold text-zinc-950">Uploaded files</p>
+                        {knowledge.pdf_files.length === 0 ? (
+                          <p className="mt-2 text-sm text-zinc-500">No PDFs uploaded yet.</p>
+                        ) : (
+                          <ul className="mt-3 space-y-2">
+                            {knowledge.pdf_files.map((fileName: string) => (
+                              <li
+                                key={fileName}
+                                className="flex items-center justify-between gap-3 rounded-lg border border-white/80 bg-white/80 px-3 py-2 text-sm text-zinc-700"
+                              >
+                                <span className="truncate">{fileName}</span>
+                                <TrashButton
+                                  label={`Remove ${fileName}`}
+                                  disabled={knowledgeBusy}
+                                  onClick={() => void handleDeletePdf(fileName)}
+                                />
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {knowledgeTab === "websites" && (
+                    <div className="space-y-4">
+                      <div className="rounded-lg border border-teal-200 bg-teal-50/70 p-4">
+                        <div className="flex flex-col gap-3 sm:flex-row">
+                          <input
+                            value={urlInput}
+                            onChange={(event) => setUrlInput(event.target.value)}
+                            placeholder="https://example.com"
+                            className="min-w-0 flex-1 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 outline-none transition placeholder:text-zinc-400 focus:border-teal-500 focus:ring-4 focus:ring-teal-100 disabled:cursor-not-allowed disabled:bg-zinc-100"
+                          />
+                          <button
+                            type="button"
+                            disabled={knowledgeBusy || !urlInput.trim()}
+                            onClick={() => void handleAddUrl()}
+                            className="rounded-lg bg-zinc-950 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-teal-700 disabled:translate-y-0 disabled:cursor-not-allowed disabled:bg-zinc-400"
+                          >
+                            {addingUrl ? "Adding..." : "Add URL"}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="rounded-lg border border-teal-200 bg-teal-50/70 p-4">
+                        <p className="text-sm font-semibold text-zinc-950">Tracked URLs</p>
+                        {knowledge.urls.length === 0 ? (
+                          <p className="mt-2 text-sm text-zinc-500">No websites added yet.</p>
+                        ) : (
+                          <ul className="mt-3 space-y-2">
+                            {knowledge.urls.map((url: string) => (
+                              <li
+                                key={url}
+                                className="flex items-center justify-between gap-3 rounded-lg border border-white/80 bg-white/80 px-3 py-2 text-sm text-zinc-700"
+                              >
+                                <span className="truncate">{url}</span>
+                                <TrashButton
+                                  label={`Remove ${url}`}
+                                  disabled={knowledgeBusy}
+                                  onClick={() => void handleDeleteUrl(url)}
+                                />
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </Card>
             )}

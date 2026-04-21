@@ -36,6 +36,17 @@ export type ToolAliasesResponse = {
   tool_aliases: Record<string, Record<string, string>>;
 };
 
+export type KnowledgeStatusResponse = {
+  agent_id: string;
+  pdf_count: number;
+  url_count: number;
+  pdf_files: string[];
+  urls: string[];
+  last_indexed_time: string | null;
+  indexing: boolean;
+  error: string | null;
+};
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
     ...options,
@@ -87,5 +98,59 @@ export const adminApi = {
   saveToolAliases: (agentId: string, toolAliases: ToolAliasesResponse["tool_aliases"]) =>
     put<ToolAliasesResponse>(`/admin/tool-aliases/${encodeURIComponent(agentId)}`, {
       tool_aliases: toolAliases,
+    }),
+
+  getKnowledgeStatus: (agentId: string) =>
+    request<KnowledgeStatusResponse>(`/admin/knowledge-status/${encodeURIComponent(agentId)}`),
+  rebuildIndex: (agentId: string) =>
+    request<{ detail: string; agent_id: string }>(`/admin/rebuild-index/${encodeURIComponent(agentId)}`, {
+      method: "POST",
+    }),
+  addUrl: (agentId: string, url: string) =>
+    request<{ detail: string; agent_id: string; url: string }>(`/admin/add-url`, {
+      method: "POST",
+      body: JSON.stringify({ agent_id: agentId, url }),
+      headers: { "Content-Type": "application/json" },
+    }),
+  deletePdf: (agentId: string, filename: string) =>
+    request<{ detail: string; agent_id: string; filename: string }>(
+      `/admin/pdf/${encodeURIComponent(agentId)}?filename=${encodeURIComponent(filename)}`,
+      { method: "DELETE" },
+    ),
+  deleteUrl: (agentId: string, url: string) =>
+    request<{ detail: string; agent_id: string; url: string }>(
+      `/admin/url/${encodeURIComponent(agentId)}?url=${encodeURIComponent(url)}`,
+      { method: "DELETE" },
+    ),
+  uploadPdf: (
+    agentId: string,
+    file: File,
+    onProgress?: (progress: number) => void,
+  ) =>
+    new Promise<{ detail: string; agent_id: string; filename: string }>((resolve, reject) => {
+      const formData = new FormData();
+      formData.append("agent_id", agentId);
+      formData.append("file", file);
+
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `${API_URL}/admin/upload-pdf`);
+      xhr.upload.onprogress = (event) => {
+        if (!event.lengthComputable || !onProgress) return;
+        onProgress(Math.round((event.loaded / event.total) * 100));
+      };
+      xhr.onload = () => {
+        try {
+          const parsed = JSON.parse(xhr.responseText || "{}");
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve(parsed);
+            return;
+          }
+          reject(new Error(parsed.detail || `Request failed with status ${xhr.status}`));
+        } catch {
+          reject(new Error(`Request failed with status ${xhr.status}`));
+        }
+      };
+      xhr.onerror = () => reject(new Error("Upload failed."));
+      xhr.send(formData);
     }),
 };

@@ -5,8 +5,13 @@ import asyncio
 import json
 import logging
 import re
+import shutil
+from datetime import datetime
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
+from uuid import uuid4
 
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -49,6 +54,8 @@ BGE_QUERY_INSTRUCTION = "Represent this sentence for searching relevant passages
 _EMBEDDINGS_CACHE: dict[tuple[str, bool], Any] = {}
 _QUERY_EXPANSION_CACHE: dict[tuple[str, str], str] = {}
 _QUERY_VARIANTS_CACHE: dict[tuple[str, str], list[str]] = {}
+_VECTOR_STORE_CACHE: dict[str, Any] = {}
+_KNOWLEDGE_STATUS: dict[str, dict[str, Any]] = {}
 
 MULTISPACE_PATTERN = re.compile(r"[ \t]+")
 MULTINEWLINE_PATTERN = re.compile(r"\n{3,}")
@@ -58,6 +65,32 @@ TOKEN_PATTERN = re.compile(r"\b[a-z0-9]{3,}\b")
 
 class RagConfigurationError(RuntimeError):
     """Raised when the RAG stack is unavailable or misconfigured."""
+
+
+class _VisibleTextExtractor(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self._skip_depth = 0
+        self._chunks: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag in {"script", "style", "noscript"}:
+            self._skip_depth += 1
+        if tag in {"p", "div", "section", "article", "br", "li", "h1", "h2", "h3", "h4"}:
+            self._chunks.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"script", "style", "noscript"} and self._skip_depth > 0:
+            self._skip_depth -= 1
+        if tag in {"p", "div", "section", "article", "li"}:
+            self._chunks.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth == 0 and data.strip():
+            self._chunks.append(data)
+
+    def get_text(self) -> str:
+        return "".join(self._chunks)
 
 
 REQUIRED_RAG_CONFIG_KEYS = (
@@ -95,6 +128,10 @@ def _rag_config_cache_key(config: dict) -> str:
     return json.dumps(relevant_config, sort_keys=True, default=list)
 
 
+def _agent_cache_key(config: dict) -> str:
+    return str(config["agent_id"]).strip()
+
+
 # ========================
 # PATHS
 # ========================
@@ -125,6 +162,26 @@ def get_crawl_output_path(config: dict) -> Path:
 
 def get_faiss_index_path(config: dict) -> Path:
     return _agent_scoped_backend_path(settings.RAG_FAISS_INDEX_DIR, config)
+
+
+def _normalize_url(url: str) -> str:
+    normalized = str(url or "").strip()
+    if not normalized:
+        return ""
+
+    parts = urlsplit(normalized)
+    scheme = parts.scheme or "https"
+    netloc = parts.netloc or parts.path
+    path = parts.path if parts.netloc else ""
+    clean_path = path.rstrip("/") or "/"
+    return urlunsplit((scheme.lower(), netloc.lower(), clean_path, parts.query, ""))
+
+
+def _extract_visible_text(html: str) -> str:
+    parser = _VisibleTextExtractor()
+    parser.feed(str(html or ""))
+    parser.close()
+    return _normalize_text(parser.get_text())
 
 
 # ========================
@@ -759,6 +816,20 @@ def load_crawl_documents(
     return documents
 
 
+def load_crawl_results(
+    output_path: Path | None = None,
+    config: dict | None = None,
+) -> list[dict[str, Any]]:
+    target_path = output_path or get_crawl_output_path(config)
+    if not target_path.exists():
+        return []
+    try:
+        loaded = json.loads(target_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid crawl output JSON at {target_path}: {exc}") from exc
+    return loaded if isinstance(loaded, list) else []
+
+
 def save_crawl_results(
     crawl_results: list[dict[str, str]],
     output_path: Path | None = None,
@@ -787,9 +858,17 @@ async def crawl_websites(urls: list[str]) -> list[dict[str, str]]:
     async with AsyncWebCrawler() as crawler:
         for url in urls:
             result = await crawler.arun(url=url)
-            content = getattr(result, "markdown", None) or getattr(result, "cleaned_html", None) or ""
+            html = getattr(result, "cleaned_html", None) or getattr(result, "html", None) or ""
+            content = _extract_visible_text(html) if html else _normalize_text(getattr(result, "markdown", None) or "")
             if content:
-                crawl_results.append({"url": url, "content": str(content)})
+                crawl_results.append(
+                    {
+                        "url": _normalize_url(url),
+                        "content": content,
+                        "title": str(getattr(result, "title", "") or "").strip(),
+                        "updated_at": datetime.utcnow().isoformat(),
+                    }
+                )
 
     return crawl_results
 
@@ -801,6 +880,25 @@ def crawl_and_save_websites(
 ) -> Path:
     crawl_results = asyncio.run(crawl_websites(urls))
     return save_crawl_results(crawl_results, output_path=output_path, config=config)
+
+
+def append_crawl_result(
+    crawled_item: dict[str, str],
+    output_path: Path | None = None,
+    config: dict | None = None,
+) -> tuple[Path, bool]:
+    target_path = output_path or get_crawl_output_path(config)
+    existing = load_crawl_results(output_path=target_path, config=config)
+    normalized_url = _normalize_url(crawled_item.get("url", ""))
+    if not normalized_url:
+        raise ValueError("A valid URL is required.")
+
+    for item in existing:
+        if _normalize_url(str(item.get("url", ""))) == normalized_url:
+            return target_path, False
+
+    next_items = [*existing, {**crawled_item, "url": normalized_url}]
+    return save_crawl_results(next_items, output_path=target_path, config=config), True
 
 
 # ========================
@@ -878,7 +976,15 @@ def save_vector_store(vector_store, index_path: Path | None = None, config: dict
     return target_path
 
 
+def clear_vector_store_cache(agent_id: str) -> None:
+    _VECTOR_STORE_CACHE.pop(str(agent_id).strip(), None)
+
+
 def load_vector_store(index_path: Path | None = None, config: dict | None = None):
+    cache_key = _agent_cache_key(config) if config else ""
+    if cache_key and index_path is None and cache_key in _VECTOR_STORE_CACHE:
+        return _VECTOR_STORE_CACHE[cache_key]
+
     target_path = index_path or get_faiss_index_path(config)
     index_file = target_path / "index.faiss"
     store_file = target_path / "index.pkl"
@@ -897,11 +1003,14 @@ def load_vector_store(index_path: Path | None = None, config: dict | None = None
     except Exception:
         embeddings = _get_embeddings(local_files_only=False)
 
-    return FAISS.load_local(
+    vector_store = FAISS.load_local(
         str(target_path),
         embeddings,
         allow_dangerous_deserialization=True,
     )
+    if cache_key and index_path is None:
+        _VECTOR_STORE_CACHE[cache_key] = vector_store
+    return vector_store
 
 
 # ========================
@@ -927,6 +1036,40 @@ def ingest_knowledge_base(
     return vector_store
 
 
+def _set_knowledge_status(agent_id: str, **updates: Any) -> None:
+    current = _KNOWLEDGE_STATUS.get(agent_id, {"indexing": False, "last_indexed_time": None, "error": None})
+    current.update(updates)
+    _KNOWLEDGE_STATUS[agent_id] = current
+
+
+def get_knowledge_status(agent_id: str, config: dict | None = None) -> dict[str, Any]:
+    cfg = config or {"agent_id": agent_id}
+    pdf_dir = get_pdf_directory(cfg)
+    crawl_path = get_crawl_output_path(cfg)
+    index_path = get_faiss_index_path(cfg)
+
+    pdf_files = sorted(path.name for path in pdf_dir.glob("*.pdf")) if pdf_dir.exists() else []
+    crawl_results = load_crawl_results(output_path=crawl_path, config=cfg) if crawl_path.exists() else []
+    urls = [str(item.get("url", "")).strip() for item in crawl_results if str(item.get("url", "")).strip()]
+
+    last_indexed_time = None
+    index_file = index_path / "index.faiss"
+    if index_file.exists():
+        last_indexed_time = datetime.fromtimestamp(index_file.stat().st_mtime).isoformat()
+
+    state = _KNOWLEDGE_STATUS.get(str(agent_id).strip(), {})
+    return {
+        "agent_id": str(agent_id).strip(),
+        "pdf_count": len(pdf_files),
+        "url_count": len(urls),
+        "pdf_files": pdf_files,
+        "urls": urls,
+        "last_indexed_time": state.get("last_indexed_time") or last_indexed_time,
+        "indexing": bool(state.get("indexing", False)),
+        "error": state.get("error"),
+    }
+
+
 def get_or_create_vector_store(config: dict | None = None):
     vector_store = load_vector_store(config=config)
     if vector_store is not None:
@@ -943,6 +1086,55 @@ def get_or_create_vector_store(config: dict | None = None):
     except Exception as exc:
         logger.exception("Failed to build FAISS index: %s", exc)
         raise
+
+
+def rebuild_faiss_index(agent_id: str) -> Path:
+    from app.agent.config import DynamicAgentConfig
+    from app.database import SessionLocal
+
+    clean_agent_id = str(agent_id).strip()
+    db = SessionLocal()
+    _set_knowledge_status(clean_agent_id, indexing=True, error=None)
+    try:
+        config_obj = DynamicAgentConfig(clean_agent_id, db)
+        rag_config = config_obj.rag
+        _validate_rag_config(rag_config)
+
+        vector_store = build_vector_store(load_source_documents(config=rag_config))
+        final_path = get_faiss_index_path(rag_config)
+        temp_path = final_path.parent / f"{final_path.name}.__tmp__{uuid4().hex}"
+        backup_path = final_path.parent / f"{final_path.name}.__bak__{uuid4().hex}"
+
+        save_vector_store(vector_store, index_path=temp_path, config=rag_config)
+
+        try:
+            if final_path.exists():
+                final_path.replace(backup_path)
+            temp_path.replace(final_path)
+            if backup_path.exists():
+                shutil.rmtree(backup_path, ignore_errors=True)
+        except Exception:
+            if temp_path.exists():
+                shutil.rmtree(temp_path, ignore_errors=True)
+            if backup_path.exists() and not final_path.exists():
+                backup_path.replace(final_path)
+            raise
+
+        clear_vector_store_cache(clean_agent_id)
+        indexed_time = datetime.utcnow().isoformat()
+        _set_knowledge_status(
+            clean_agent_id,
+            indexing=False,
+            error=None,
+            last_indexed_time=indexed_time,
+        )
+        return final_path
+    except Exception as exc:
+        logger.exception("Failed to rebuild FAISS index for '%s': %s", clean_agent_id, exc)
+        _set_knowledge_status(clean_agent_id, indexing=False, error=str(exc))
+        raise
+    finally:
+        db.close()
 
 
 # ========================

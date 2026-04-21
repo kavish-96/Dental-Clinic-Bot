@@ -1,7 +1,8 @@
+import asyncio
 import json
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
@@ -12,6 +13,16 @@ from app.models import (
     AgentRAGConfig,
     AgentSynonym,
     AgentToolAlias,
+)
+from app.rag import (
+    _normalize_url,
+    append_crawl_result,
+    crawl_websites,
+    get_knowledge_status as get_agent_knowledge_status,
+    get_pdf_directory,
+    load_crawl_results,
+    rebuild_faiss_index,
+    save_crawl_results,
 )
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -135,6 +146,28 @@ class ToolAliasesBody(BaseModel):
             }
             cleaned[clean_tool] = cleaned_aliases
         return cleaned
+
+
+class AddUrlBody(BaseModel):
+    agent_id: str
+    url: str
+
+    @field_validator("agent_id", "url")
+    @classmethod
+    def require_value(cls, value: str):
+        cleaned = str(value).strip()
+        if not cleaned:
+            raise ValueError("This field is required.")
+        return cleaned
+
+
+def _background_rebuild(agent_id: str) -> None:
+    rebuild_faiss_index(agent_id)
+
+
+def _ensure_not_indexing(agent_id: str) -> None:
+    if get_agent_knowledge_status(agent_id).get("indexing"):
+        raise HTTPException(status_code=409, detail="Knowledge base is currently rebuilding. Please wait.")
 
 
 @router.get("/prompts/{agent_id}")
@@ -310,3 +343,101 @@ def update_tool_aliases(agent_id: str, body: ToolAliasesBody, db: Session = Depe
             db.delete(record)
     db.commit()
     return get_tool_aliases(agent_id, db)
+
+
+@router.post("/upload-pdf")
+async def upload_pdf(
+    agent_id: str = Form(...),
+    file: UploadFile = File(...),
+):
+    clean_agent_id = str(agent_id).strip()
+    if not clean_agent_id:
+        raise HTTPException(status_code=400, detail="agent_id is required.")
+    _ensure_not_indexing(clean_agent_id)
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported.")
+
+    target_dir = get_pdf_directory({"agent_id": clean_agent_id})
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_path = target_dir / file.filename
+    contents = await file.read()
+    target_path.write_bytes(contents)
+    await file.close()
+
+    return {
+        "detail": "Upload successful",
+        "agent_id": clean_agent_id,
+        "filename": file.filename,
+    }
+
+
+@router.post("/add-url")
+def add_url(body: AddUrlBody):
+    clean_agent_id = str(body.agent_id).strip()
+    _ensure_not_indexing(clean_agent_id)
+    clean_url = _normalize_url(body.url)
+    if not clean_url:
+        raise HTTPException(status_code=400, detail="A valid URL is required.")
+
+    existing = load_crawl_results(config={"agent_id": clean_agent_id})
+    if any(_normalize_url(str(item.get("url", ""))) == clean_url for item in existing):
+        return {"detail": "URL already exists", "agent_id": clean_agent_id, "url": clean_url}
+
+    crawled_items = asyncio.run(crawl_websites([clean_url]))
+    if not crawled_items:
+        raise HTTPException(status_code=400, detail="No visible text could be extracted from that URL.")
+    _, added = append_crawl_result(crawled_items[0], config={"agent_id": clean_agent_id})
+    detail = "URL added successfully" if added else "URL already exists"
+    return {"detail": detail, "agent_id": clean_agent_id, "url": clean_url}
+
+
+@router.delete("/pdf/{agent_id}")
+def delete_pdf(agent_id: str, filename: str):
+    clean_agent_id = str(agent_id).strip()
+    _ensure_not_indexing(clean_agent_id)
+    clean_filename = filename.strip()
+    if not clean_filename:
+        raise HTTPException(status_code=400, detail="filename is required.")
+
+    target_path = get_pdf_directory({"agent_id": clean_agent_id}) / clean_filename
+    if not target_path.exists():
+        raise HTTPException(status_code=404, detail="PDF not found.")
+    target_path.unlink()
+    return {"detail": "PDF removed", "agent_id": clean_agent_id, "filename": clean_filename}
+
+
+@router.delete("/url/{agent_id}")
+def delete_url(agent_id: str, url: str):
+    clean_agent_id = str(agent_id).strip()
+    _ensure_not_indexing(clean_agent_id)
+    clean_url = _normalize_url(url)
+    if not clean_url:
+        raise HTTPException(status_code=400, detail="url is required.")
+
+    existing = load_crawl_results(config={"agent_id": clean_agent_id})
+    remaining = [
+        item for item in existing
+        if _normalize_url(str(item.get("url", ""))) != clean_url
+    ]
+    if len(remaining) == len(existing):
+        raise HTTPException(status_code=404, detail="URL not found.")
+    save_crawl_results(remaining, config={"agent_id": clean_agent_id})
+    return {"detail": "URL removed", "agent_id": clean_agent_id, "url": clean_url}
+
+
+@router.post("/rebuild-index/{agent_id}")
+def rebuild_index(agent_id: str, background_tasks: BackgroundTasks):
+    clean_agent_id = str(agent_id).strip()
+    if not clean_agent_id:
+        raise HTTPException(status_code=400, detail="agent_id is required.")
+    _ensure_not_indexing(clean_agent_id)
+    background_tasks.add_task(_background_rebuild, clean_agent_id)
+    return {"detail": "Index rebuild started", "agent_id": clean_agent_id}
+
+
+@router.get("/knowledge-status/{agent_id}")
+def knowledge_status(agent_id: str):
+    clean_agent_id = str(agent_id).strip()
+    if not clean_agent_id:
+        raise HTTPException(status_code=400, detail="agent_id is required.")
+    return get_agent_knowledge_status(clean_agent_id)
