@@ -147,13 +147,13 @@ import re
 # - Output only the rewritten standalone message.
 # """
 
-CHAT_PATTERNS = [
-    (re.compile(r"^\s*(thanks|thank you|thankyou|thx|tysm)\s*[.!]*\s*$", re.IGNORECASE), "You're welcome. If you'd like, I can also help with appointments and clinic information."),
-    (re.compile(r"^\s*(hi|hello|hey|good morning|good afternoon|good evening)\s*[.!]*\s*$", re.IGNORECASE), "Hello. How can I help you today at SmileCare Dental Clinic?"),
-    (re.compile(r"^\s*(bye|goodbye|see you|ok bye|okay bye)\s*[.!]*\s*$", re.IGNORECASE), "Take care. If you need anything later, I'm here to help."),
-    (re.compile(r"^\s*(ok|okay|cool|alright|fine|got it|noted)\s*[.!]*\s*$", re.IGNORECASE), "Sure. Let me know what you'd like to do next."),
-    (re.compile(r"^\s*(who are you|what can you do)\s*[?!]*\s*$", re.IGNORECASE), "I'm the clinic assistant. I can help book, update, cancel, or view appointments and answer clinic questions."),
-]
+# CHAT_PATTERNS = [
+#     (re.compile(r"^\s*(thanks|thank you|thankyou|thx|tysm)\s*[.!]*\s*$", re.IGNORECASE), "You're welcome. If you'd like, I can also help with appointments and clinic information."),
+#     (re.compile(r"^\s*(hi|hello|hey|good morning|good afternoon|good evening)\s*[.!]*\s*$", re.IGNORECASE), "Hello. How can I help you today at SmileCare Dental Clinic?"),
+#     (re.compile(r"^\s*(bye|goodbye|see you|ok bye|okay bye)\s*[.!]*\s*$", re.IGNORECASE), "Take care. If you need anything later, I'm here to help."),
+#     (re.compile(r"^\s*(ok|okay|cool|alright|fine|got it|noted)\s*[.!]*\s*$", re.IGNORECASE), "Sure. Let me know what you'd like to do next."),
+#     (re.compile(r"^\s*(who are you|what can you do)\s*[?!]*\s*$", re.IGNORECASE), "I'm the clinic assistant. I can help book, update, cancel, or view appointments and answer clinic questions."),
+# ]
 
 # def get_tool_aliases():
 #     return TOOL_ARG_ALIASES

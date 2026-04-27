@@ -42,6 +42,7 @@ backend/*.sqlite
 backend/*.sqlite3
 backend/appointments.db
 backend/faiss_index/
+backend/data/rag/faiss_index
 
 # Frontend / Next.js
 frontend/node_modules/

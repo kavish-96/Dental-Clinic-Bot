@@ -32,20 +32,20 @@ NEXT_SLOT_RESULT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-APPOINTMENT_CONTACT_PATTERNS = [
-    re.compile(
-        r"\b(?:who|whom)\s+(?:should\s+i\s+)?(?:contact|call|reach|message)\b.*\b(?:appointment|book|booking|schedule)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(?:contact|call|reach|message)\b.*\b(?:appointment|book|booking|schedule)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(?:appointment|book|booking|schedule)\b.*\b(?:contact|call|reach|message)\b",
-        re.IGNORECASE,
-    ),
-]
+# APPOINTMENT_CONTACT_PATTERNS = [
+#     re.compile(
+#         r"\b(?:who|whom)\s+(?:should\s+i\s+)?(?:contact|call|reach|message)\b.*\b(?:appointment|book|booking|schedule)\b",
+#         re.IGNORECASE,
+#     ),
+#     re.compile(
+#         r"\b(?:contact|call|reach|message)\b.*\b(?:appointment|book|booking|schedule)\b",
+#         re.IGNORECASE,
+#     ),
+#     re.compile(
+#         r"\b(?:appointment|book|booking|schedule)\b.*\b(?:contact|call|reach|message)\b",
+#         re.IGNORECASE,
+#     ),
+# ]
 
 APPOINTMENT_ACTION_PATTERNS = [
     re.compile(
@@ -102,15 +102,15 @@ class DentalService:
     def get_tool_aliases(self, agent_id: str):
         return crud.get_tool_aliases(self.db, agent_id)
 
-    def handle_small_talk(self, messages: List[BaseMessage]) -> str | None:
-        latest_user_message = self._latest_user_message(messages)
-        if not latest_user_message:
-            return None
+    # def handle_small_talk(self, messages: List[BaseMessage]) -> str | None:
+    #     latest_user_message = self._latest_user_message(messages)
+    #     if not latest_user_message:
+    #         return None
         
-        for pattern, reply in config.CHAT_PATTERNS:
-            if pattern.match(latest_user_message):
-                return reply
-        return None
+    #     for pattern, reply in config.CHAT_PATTERNS:
+    #         if pattern.match(latest_user_message):
+    #             return reply
+    #     return None
 
     def parse_tool_calls(self, content: str) -> list[dict]:
         tool_calls: list[dict] = []
@@ -290,10 +290,10 @@ class DentalService:
             )
         )
 
-    def looks_like_appointment_contact_request(self, text: str) -> bool:
-        if not text:
-            return False
-        return any(pattern.search(text) for pattern in APPOINTMENT_CONTACT_PATTERNS)
+    # def looks_like_appointment_contact_request(self, text: str) -> bool:
+    #     if not text:
+    #         return False
+    #     return any(pattern.search(text) for pattern in APPOINTMENT_CONTACT_PATTERNS)
 
     def looks_like_appointment_general_question(self, text: str) -> bool:
         if not text:
@@ -318,8 +318,8 @@ class DentalService:
         latest_user_message = latest_user_message or self._latest_user_message(messages)
         if not latest_user_message:
             return False
-        if self.looks_like_appointment_contact_request(latest_user_message):
-            return True
+        # if self.looks_like_appointment_contact_request(latest_user_message):
+        #     return True
         if self.looks_like_appointment_general_question(latest_user_message):
             return False
         if (

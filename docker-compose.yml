@@ -1,7 +1,7 @@
 services:
   db:
     image: postgres:16
-    container_name: appointment-booking-db
+    # container_name: appointment-booking-db
     environment:
       POSTGRES_DB: appointments
       POSTGRES_USER: postgres
@@ -11,7 +11,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d appointments"]
+      test: [ "CMD-SHELL", "pg_isready -U postgres -d appointments" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -20,7 +20,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: appointment-booking-backend
+    # container_name: appointment-booking-backend
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     env_file:
       - ./backend/.env
@@ -31,12 +31,12 @@ services:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@db:5432/appointments
       RAG_PDF_DIR: ./data/rag/pdfs
       RAG_CRAWL_OUTPUT_PATH: ./data/rag/webcrawling
-      RAG_FAISS_INDEX_DIR: ./faiss_index
+      RAG_FAISS_INDEX_DIR: ./data/rag/faiss_index
       RAG_EMBEDDING_MODEL: BAAI/bge-base-en
     volumes:
       - ./backend/app:/app/app
       - ./backend/data:/app/data
-      - ./backend/faiss_index:/app/faiss_index
+      # - ./backend/faiss_index:/app/faiss_index
     ports:
       - "8080:8000"
 

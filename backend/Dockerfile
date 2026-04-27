@@ -60,7 +60,7 @@ RUN --mount=type=cache,target=/root/.cache/huggingface \
 # Copy project files
 COPY app ./app
 COPY data ./data
-COPY faiss_index ./faiss_index
+# COPY faiss_index ./faiss_index
 
 EXPOSE 8000
 
